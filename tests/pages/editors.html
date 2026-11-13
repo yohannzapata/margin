@@ -1,0 +1,19 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Margin editor test</title>
+<style>body{font:15px Segoe UI;margin:24px}textarea,div[contenteditable]{width:520px;min-height:60px;border:1px solid #bbb;padding:8px;margin:8px 0}</style>
+</head><body>
+<!-- Plain textarea (Reddit comment box, many forms) -->
+<textarea id="ta" aria-label="Textarea"></textarea>
+<!-- Gmail-style rich editor -->
+<div id="ce" contenteditable="true" role="textbox" aria-multiline="true" aria-label="Message body"></div>
+<!-- Messenger/Discord-style editor: contenteditable driven by an input-event model -->
+<div id="chat" contenteditable="true" role="textbox" aria-label="Chat message"><p><br></p></div>
+<input type="password" id="pw" aria-label="Password">
+<script>
+  const target = new URLSearchParams(location.search).get("focus") || "ta";
+  window.addEventListener("load", () => document.getElementById(target).focus());
+  // Mimic Lexical/Draft.js: editor manages its own model from beforeinput.
+  const chat = document.getElementById("chat");
+  chat.addEventListener("beforeinput", e => { chat.dataset.events = (+chat.dataset.events || 0) + 1; });
+</script>
+</body></html>
