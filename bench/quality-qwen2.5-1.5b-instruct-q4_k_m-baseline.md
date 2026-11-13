@@ -1,0 +1,127 @@
+# qwen2.5-1.5b-instruct-q4_k_m.gguf BASELINE v0.1 GPU
+
+- PASS **apos-1** [missing apostrophes] 1223 ms
+  - in:  `i dont know`
+  - out: `I don't know`
+- FAIL **apos-2** [missing apostrophes] 1347 ms
+  - in:  `thats actually pretty good`
+  - out: `That's actually pretty good`
+  - want: `That's actually pretty good.`
+- FAIL **apos-3** [missing apostrophes] 178 ms
+  - in:  `we cant come tonight because were still at sarahs place`
+  - out: `We can't come tonight because we're still at Sarah's place`
+  - want: `We can't come tonight because we're still at Sarah's place.`
+- FAIL **contr-1** [incorrect contractions] 148 ms
+  - in:  `your going to love it, its really good`
+  - out: `Your going to love it, it's really good`
+  - want: `You're going to love it, it's really good.`
+- FAIL **contr-2** [incorrect contractions] 162 ms
+  - in:  `The dog wagged it's tail when they're owner came home.`
+  - out: `The dog wagged its tail when the owner came home.`
+  - want: `The dog wagged its tail when their owner came home.`
+- FAIL **contr-3** [incorrect contractions] 129 ms
+  - in:  `I would of helped if you asked`
+  - out: `I would have helped if you asked`
+  - want: `I would have helped if you asked.`
+- FAIL **comma-1** [missing commas] 134 ms
+  - in:  `yeah i was thinking the same thing`
+  - out: `yeah, i was thinking the same thing`
+  - want: `Yeah, I was thinking the same thing.`
+- FAIL **comma-2** [missing commas] 124 ms
+  - in:  `thanks John I really appreciate it`
+  - out: `Thanks John, I really appreciate it`
+  - want: `Thanks, John. I really appreciate it.`
+- FAIL **comma-3** [missing commas] 144 ms
+  - in:  `If you get there first save me a seat`
+  - out: `If you get there first, save me a seat`
+  - want: `If you get there first, save me a seat.`
+- FAIL **period-1** [missing periods] 188 ms
+  - in:  `I finished the report last night I will send it after lunch`
+  - out: `I finished the report last night. I will send it after lunch`
+  - want: `I finished the report last night. I will send it after lunch.`
+- FAIL **q-1** [question punctuation] 109 ms
+  - in:  `what do you think about it`
+  - out: `what do you think about it`
+  - want: `What do you think about it?`
+- FAIL **q-2** [question punctuation] 143 ms
+  - in:  `are you coming to the party on friday.`
+  - out: `are you coming to the party on friday?`
+  - want: `Are you coming to the party on Friday?`
+- FAIL **q-3** [question punctuation] 137 ms
+  - in:  `I wonder if she got my message?`
+  - out: `I wonder if she got my message?`
+  - want: `I wonder if she got my message.`
+- FAIL **quote-1** [direct speech] 198 ms
+  - in:  `she said i will be there in five minutes but she never showed up`
+  - out: `She said I'll be there in five minutes, but she never showed up`
+  - want: `She said, "I will be there in five minutes," but she never showed up.`
+- FAIL **quote-2** [direct speech (no quotes wanted)] 147 ms
+  - in:  `he told me that the meeting was moved to tuesday`
+  - out: `He told me that the meeting was moved to Tuesday`
+  - want: `He told me that the meeting was moved to Tuesday.`
+- FAIL **long-1** [long multi-sentence] 366 ms
+  - in:  `hey i was thinking about what you said yesterday honestly i dont think thats going to work because we already tried something similar before and it didnt really go well`
+  - out: `hey, i was thinking about what you said yesterday. honestly, i don't think that's going to work because we already tried something similar before and it didn't really go well`
+  - want: `Hey, I was thinking about what you said yesterday. Honestly, I don't think that's going to work because we already tried something similar before, and it didn't really go well.`
+- FAIL **long-2** [long multi-sentence] 314 ms
+  - in:  `Hi Maria, thanks for the update. i looked at the numbers and they look good but the budget for march is still missing can you send it when you get a chance`
+  - out: `Hi Maria, thanks for the update. I looked at the numbers and they look good, but the budget for March is still missing. Can you send it when you get a chance`
+  - want: `Hi Maria, thanks for the update. I looked at the numbers, and they look good, but the budget for March is still missing. Can you send it when you get a chance?`
+- FAIL **para-1** [multiple paragraphs] 226 ms
+  - in:  `next week we need to fix the login bug its affecting a lot of users`
+  - out: `Next week, we need to fix the login bug, as it's affecting a lot of users`
+  - want: `Next week, we need to fix the login bug. It's affecting a lot of users.`
+- FAIL **run-1** [run-on] 216 ms
+  - in:  `i went to the store they were out of milk so i got juice instead`
+  - out: `I went to the store, they were out of milk, so I got juice instead`
+  - want: `I went to the store. They were out of milk, so I got juice instead.`
+- PASS **inc-1** [incomplete sentence] 157 ms
+  - in:  `I dont think thats a good idea because its`
+  - out: `I don't think that's a good idea because it's`
+- FAIL **inc-2** [incomplete sentence] 191 ms
+  - in:  `hey are you free tomorrow i wanted to ask if`
+  - out: `(no suggestion: correction added new words)`
+  - want: `Hey, are you free tomorrow? I wanted to ask if`
+- FAIL **casual-1** [casual] 165 ms
+  - in:  `lol thats so true, cant wait to see u guys`
+  - out: `lol that's so true, can't wait to see you guys`
+  - want: `Lol, that's so true, can't wait to see u guys!`
+- FAIL **casual-2** [casual] 140 ms
+  - in:  `gonna be late, traffic is crazy rn`
+  - out: `gonna be late, traffic is crazy rn`
+  - want: `Gonna be late, traffic is crazy rn.`
+- FAIL **mixed-1** [mixed language] 172 ms
+  - in:  `ok sige, see you later na lang kasi busy pa ako`
+  - out: `ok, see you later na lang, kasi busy pa ako`
+  - want: `Ok sige, see you later na lang kasi busy pa ako.`
+- FAIL **mixed-2** [mixed language] 185 ms
+  - in:  `the fiesta was so much fun, the lechon was amazing`
+  - out: `The fiesta was so much fun, the lechon was amazing`
+  - want: `The fiesta was so much fun, the lechon was amazing.`
+- PASS **ok-1** [already correct] 131 ms
+  - in:  `The meeting is at 3pm tomorrow.`
+  - out: `The meeting is at 3pm tomorrow.`
+- PASS **ok-2** [already correct] 153 ms
+  - in:  `Thanks so much, I'll see you on Monday!`
+  - out: `Thanks so much, I'll see you on Monday!`
+- PASS **ok-3** [already correct] 139 ms
+  - in:  `Not yet, but I'm almost done.`
+  - out: `Not yet, but I'm almost done.`
+- FAIL **ctx-1** [context-dependent words] 190 ms
+  - in:  `there going to be here soon, put the bags over their`
+  - out: `(no suggestion: correction added new words)`
+  - want: `They're going to be here soon. Put the bags over there.`
+- FAIL **ctx-2** [context-dependent words] 221 ms
+  - in:  `this phone is way better then my old one and the camera is to good`
+  - out: `This phone is way better than my old one, and the camera is too good`
+  - want: `This phone is way better than my old one, and the camera is too good.`
+- FAIL **ctx-3** [context-dependent words] 217 ms
+  - in:  `it didnt effect me at all, I'm not sure its working`
+  - out: `It didn't affect me at all. I'm not sure if it's working`
+  - want: `It didn't affect me at all. I'm not sure it's working.`
+- FAIL **ctx-4** [context-dependent words] 180 ms
+  - in:  `there place is huge and its close to the station`
+  - out: `There's a place that's huge and close to the station`
+  - want: `Their place is huge, and it's close to the station.`
+
+**Correct mode: 5/32 pass, mean 246 ms**

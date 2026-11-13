@@ -1,0 +1,304 @@
+# Qwen3-4B-Instruct-2507-Q4_K_M.gguf (GPU)
+
+## Correct (graded against accepted answers)
+
+- PASS **apos-1** [missing apostrophes] 351 ms
+  - in:  `i dont know`
+  - out: `I don't know.`
+- PASS **apos-2** [missing apostrophes] 334 ms
+  - in:  `thats actually pretty good`
+  - out: `That's actually pretty good.`
+- PASS **apos-3** [missing apostrophes] 547 ms
+  - in:  `we cant come tonight because were still at sarahs place`
+  - out: `We can't come tonight because we're still at Sarah's place.`
+- PASS **contr-1** [incorrect contractions] 436 ms
+  - in:  `your going to love it, its really good`
+  - out: `You're going to love it. It's really good.`
+- PASS **contr-2** [incorrect contractions] 460 ms
+  - in:  `The dog wagged it's tail when they're owner came home.`
+  - out: `The dog wagged its tail when their owner came home.`
+- PASS **contr-3** [incorrect contractions] 364 ms
+  - in:  `I would of helped if you asked`
+  - out: `I would have helped if you asked.`
+- PASS **comma-1** [missing commas] 376 ms
+  - in:  `yeah i was thinking the same thing`
+  - out: `Yeah, I was thinking the same thing.`
+- PASS **comma-2** [missing commas] 379 ms
+  - in:  `thanks John I really appreciate it`
+  - out: `Thanks, John, I really appreciate it.`
+- PASS **comma-3** [missing commas] 418 ms
+  - in:  `If you get there first save me a seat`
+  - out: `If you get there first, save me a seat.`
+- PASS **period-1** [missing periods] 487 ms
+  - in:  `I finished the report last night I will send it after lunch`
+  - out: `I finished the report last night. I will send it after lunch.`
+- PASS **q-1** [question punctuation] 353 ms
+  - in:  `what do you think about it`
+  - out: `What do you think about it?`
+- PASS **q-2** [question punctuation] 394 ms
+  - in:  `are you coming to the party on friday.`
+  - out: `Are you coming to the party on Friday?`
+- FAIL **q-3** [question punctuation] 381 ms
+  - in:  `I wonder if she got my message?`
+  - out: `I wonder if she got my message?`
+  - want: `I wonder if she got my message.`
+- PASS **quote-1** [direct speech] 515 ms
+  - in:  `she said i will be there in five minutes but she never showed up`
+  - out: `She said I will be there in five minutes, but she never showed up.`
+- PASS **quote-2** [direct speech (no quotes wanted)] 418 ms
+  - in:  `he told me that the meeting was moved to tuesday`
+  - out: `He told me that the meeting was moved to Tuesday.`
+- PASS **long-1** [long multi-sentence] 968 ms
+  - in:  `hey i was thinking about what you said yesterday honestly i dont think thats going to work because we already tried something similar before and it didnt really go well`
+  - out: `Hey, I was thinking about what you said yesterday. Honestly, I don't think that's going to work because we already tried something similar before and it didn't really go well.`
+- PASS **long-2** [long multi-sentence] 964 ms
+  - in:  `Hi Maria, thanks for the update. i looked at the numbers and they look good but the budget for march is still missing can you send it when you get a chance`
+  - out: `Hi Maria, thanks for the update. I looked at the numbers and they look good, but the budget for March is still missing. Can you send it when you get a chance?`
+- PASS **para-1** [multiple paragraphs] 617 ms
+  - in:  `next week we need to fix the login bug its affecting a lot of users`
+  - out: `Next week we need to fix the login bug. It's affecting a lot of users.`
+- PASS **run-1** [run-on] 541 ms
+  - in:  `i went to the store they were out of milk so i got juice instead`
+  - out: `I went to the store. They were out of milk, so I got juice instead.`
+- PASS **inc-1** [incomplete sentence] 440 ms
+  - in:  `I dont think thats a good idea because its`
+  - out: `I don't think that's a good idea because it's`
+- PASS **inc-2** [incomplete sentence] 437 ms
+  - in:  `hey are you free tomorrow i wanted to ask if`
+  - out: `Hey, are you free tomorrow? I wanted to ask if`
+- PASS **casual-1** [casual] 589 ms
+  - in:  `lol thats so true, cant wait to see u guys`
+  - out: `Lol, that's so true, can't wait to see u guys.`
+- PASS **casual-2** [casual] 404 ms
+  - in:  `gonna be late, traffic is crazy rn`
+  - out: `Gonna be late, traffic is crazy rn.`
+- FAIL **mixed-1** [mixed language] 555 ms
+  - in:  `ok sige, see you later na lang kasi busy pa ako`
+  - out: `Ok sige, see you later na lang kasi busy pa ako`
+  - want: `Ok sige, see you later na lang kasi busy pa ako.`
+- PASS **mixed-2** [mixed language] 562 ms
+  - in:  `the fiesta was so much fun, the lechon was amazing`
+  - out: `The fiesta was so much fun. The lechon was amazing.`
+- PASS **ok-1** [already correct] 383 ms
+  - in:  `The meeting is at 3pm tomorrow.`
+  - out: `The meeting is at 3pm tomorrow.`
+- PASS **ok-2** [already correct] 411 ms
+  - in:  `Thanks so much, I'll see you on Monday!`
+  - out: `Thanks so much, I'll see you on Monday!`
+- PASS **ok-3** [already correct] 383 ms
+  - in:  `Not yet, but I'm almost done.`
+  - out: `Not yet, but I'm almost done.`
+- PASS **ctx-1** [context-dependent words] 478 ms
+  - in:  `there going to be here soon, put the bags over their`
+  - out: `They're going to be here soon. Put the bags over there.`
+- PASS **ctx-2** [context-dependent words] 532 ms
+  - in:  `this phone is way better then my old one and the camera is to good`
+  - out: `This phone is way better than my old one, and the camera is too good.`
+- PASS **ctx-3** [context-dependent words] 584 ms
+  - in:  `it didnt effect me at all, I'm not sure its working`
+  - out: `It didn't affect me at all. I'm not sure it's working.`
+- PASS **ctx-4** [context-dependent words] 500 ms
+  - in:  `there place is huge and its close to the station`
+  - out: `Their place is huge and it's close to the station.`
+
+**Correct 30/32 (median 440 ms, p90 589 ms)**
+
+## Improve (validator + keep/must-not rules; read for meaning)
+
+- **apos-1** 405 ms
+  - in:  `i dont know`
+  - out: `I don't know.`
+- **apos-2** 313 ms
+  - in:  `thats actually pretty good`
+  - out: `That's actually pretty good.`
+- **apos-3** 522 ms
+  - in:  `we cant come tonight because were still at sarahs place`
+  - out: `We can't come tonight because we're still at Sarah's place.`
+- **contr-1** 415 ms
+  - in:  `your going to love it, its really good`
+  - out: `You're going to love it; it's really good.`
+- **contr-2** 424 ms
+  - in:  `The dog wagged it's tail when they're owner came home.`
+  - out: `The dog wagged its tail when their owner came home.`
+- **contr-3** 351 ms
+  - in:  `I would of helped if you asked`
+  - out: `I would have helped if you asked.`
+- **comma-1** 366 ms
+  - in:  `yeah i was thinking the same thing`
+  - out: `Yeah, I was thinking the same thing.`
+- **comma-2** 366 ms
+  - in:  `thanks John I really appreciate it`
+  - out: `Thanks, John - I really appreciate it.`
+- **comma-3** 399 ms
+  - in:  `If you get there first save me a seat`
+  - out: `If you get there first, save me a seat.`
+- **period-1** 452 ms
+  - in:  `I finished the report last night I will send it after lunch`
+  - out: `I finished the report last night; I'll send it after lunch.`
+- **q-1** 331 ms
+  - in:  `what do you think about it`
+  - out: `What do you think about it?`
+- **q-2** 368 ms
+  - in:  `are you coming to the party on friday.`
+  - out: `Are you coming to the party on Friday?`
+- **q-3** 343 ms
+  - in:  `I wonder if she got my message?`
+  - out: (rejected: Unchanged: "I wonder if she got my message?")
+- **quote-1** 517 ms
+  - in:  `she said i will be there in five minutes but she never showed up`
+  - out: `She said I'll be there in five minutes but she never showed up.`
+- **quote-2** 387 ms
+  - in:  `he told me that the meeting was moved to tuesday`
+  - out: `He told me the meeting was moved to Tuesday.`
+- **long-1** 945 ms
+  - in:  `hey i was thinking about what you said yesterday honestly i dont think thats going to work because we already tried something similar before and it didnt really go well`
+  - out: `Hey, I was thinking about what you said yesterday. Honestly, I don't think that's going to work because we already tried something similar before and it didn't really go well.`
+- **long-2** 934 ms
+  - in:  `Hi Maria, thanks for the update. i looked at the numbers and they look good but the budget for march is still missing can you send it when you get a chance`
+  - out: `Hi Maria, thanks for the update. I looked at the numbers and they look good, but the budget for March is still missing. Can you send it when you get a chance?`
+- **para-1** 592 ms
+  - in:  `next week we need to fix the login bug its affecting a lot of users`
+  - out: `Next week we need to fix the login bug as it's affecting a lot of users.`
+- **run-1** 534 ms
+  - in:  `i went to the store they were out of milk so i got juice instead`
+  - out: `I went to the store; they were out of milk, so I got juice instead.`
+- **inc-1** 421 ms
+  - in:  `I dont think thats a good idea because its`
+  - out: `I don't think that's a good idea because it's`
+- **inc-2** 421 ms
+  - in:  `hey are you free tomorrow i wanted to ask if`
+  - out: `Hey, are you free tomorrow? I wanted to ask if`
+- **casual-1** 545 ms
+  - in:  `lol thats so true, cant wait to see u guys`
+  - out: (rejected: LostToken("u"): "Lol that's so true, can't wait to see you guys.")
+- **casual-2** 386 ms
+  - in:  `gonna be late, traffic is crazy rn`
+  - out: `Gonna be late, traffic is crazy rn.`
+- **mixed-1** 526 ms
+  - in:  `ok sige, see you later na lang kasi busy pa ako`
+  - out: `OK Sige, see you later na lang kasi busy pa ako`  **RULE FAIL: lost "sige"**
+- **mixed-2** 539 ms
+  - in:  `the fiesta was so much fun, the lechon was amazing`
+  - out: `The fiesta was so much fun, the lechon was amazing.`
+- **ok-1** 362 ms
+  - in:  `The meeting is at 3pm tomorrow.`
+  - out: (rejected: LostToken("3pm"): "The meeting is at 3 pm tomorrow.")
+- **ok-2** 400 ms
+  - in:  `Thanks so much, I'll see you on Monday!`
+  - out: (rejected: Unchanged: "Thanks so much, I'll see you on Monday!")
+- **ok-3** 368 ms
+  - in:  `Not yet, but I'm almost done.`
+  - out: (rejected: Unchanged: "Not yet, but I'm almost done.")
+- **ctx-1** 464 ms
+  - in:  `there going to be here soon, put the bags over their`
+  - out: `They're going to be here soon, put the bags over there.`
+- **ctx-2** 496 ms
+  - in:  `this phone is way better then my old one and the camera is to good`
+  - out: `This phone is way better than my old one and the camera is too good.`
+- **ctx-3** 557 ms
+  - in:  `it didnt effect me at all, I'm not sure its working`
+  - out: `It didn't affect me at all, I'm not sure it's working.`
+- **ctx-4** 476 ms
+  - in:  `there place is huge and its close to the station`
+  - out: `Their place is huge and it's close to the station.`
+
+**Improve 26/32 usable (median 421 ms, p90 557 ms)**
+
+## Rephrase (validator + keep/must-not rules; read for meaning)
+
+- **apos-1** 481 ms
+  - in:  `i dont know`
+  - out: `I don't know.`
+- **apos-2** 476 ms
+  - in:  `thats actually pretty good`
+  - out: `That's actually pretty good.` / `Actually, that's quite good.`
+- **apos-3** 875 ms
+  - in:  `we cant come tonight because were still at sarahs place`
+  - out: `We can't come tonight since we're still at Sarah's place.` / `We're stuck at Sarah's place, so we won't be able to come tonight.`
+- **contr-1** 662 ms
+  - in:  `your going to love it, its really good`
+  - out: `You're gonna love it, it's actually really good.` / `This is going to be awesome, it's truly excellent.`
+- **contr-2** 692 ms
+  - in:  `The dog wagged it's tail when they're owner came home.`
+  - out: `The dog wagged its tail when its owner came home.` / `When the owner came home, the dog wagged its tail.`
+- **contr-3** 637 ms
+  - in:  `I would of helped if you asked`
+  - out: `I would have helped if you'd asked.` / `If you'd asked, I'd have been there to help.`
+- **comma-1** 567 ms
+  - in:  `yeah i was thinking the same thing`
+  - out: `Yeah, I was thinking the same thing.` / `I'm exactly on the same page here.`
+- **comma-2** 600 ms
+  - in:  `thanks John I really appreciate it`
+  - out: `Thanks, John — I really appreciate it.` / `Appreciate it, John, thanks a lot.`
+- **comma-3** 778 ms
+  - in:  `If you get there first save me a seat`
+  - out: `If you arrive first, go ahead and reserve me a seat.` / `If you're there before me, please save me a spot.`
+- **period-1** 728 ms
+  - in:  `I finished the report last night I will send it after lunch`
+  - out: `I finished the report last night and will send it after lunch.` / `The report is done from last night, I’ll send it after lunch.`
+- **q-1** 492 ms
+  - in:  `what do you think about it`
+  - out: `How do you feel about it?`
+- **q-2** 569 ms
+  - in:  `are you coming to the party on friday.`
+  - out: `Will you be coming to the party on Friday?` / `Are you heading to the Friday party?`
+- **q-3** 563 ms
+  - in:  `I wonder if she got my message?`
+  - out: `Do you think she saw my message?`
+- **quote-1** 766 ms
+  - in:  `she said i will be there in five minutes but she never showed up`
+  - out: `She said she'd be there in five minutes but never showed up.` / `She promised to be there in five minutes, but she didn’t show.`
+- **quote-2** 672 ms
+  - in:  `he told me that the meeting was moved to tuesday`
+  - out: `He said the meeting has been rescheduled to Tuesday.` / `The meeting was moved to Tuesday, he told me.`
+- **long-1** 1586 ms
+  - in:  `hey i was thinking about what you said yesterday honestly i dont think thats going to work because we already tried something similar before and it didnt really go well`
+  - out: `Hey, I was thinking about what you said yesterday—honestly, I don't think that's going to work because we already tried something similar before and it didn't go well.` / `I just thought about your comment from yesterday, and I’m not sure it’ll work since we tried something like that before and it didn’t really turn out well.`
+- **long-2** 1630 ms
+  - in:  `Hi Maria, thanks for the update. i looked at the numbers and they look good but the budget for march is still missing can you send it when you get a chance`
+  - out: `Hi Maria, thanks for the update. I checked the numbers and they look solid, but the March budget is still missing—can you send it when you get a chance?`
+- **para-1** 914 ms
+  - in:  `next week we need to fix the login bug its affecting a lot of users`
+  - out: `Next week we need to fix the login bug since it's affecting a lot of users.` / `We’ll have to address the login bug next week—it’s impacting many users.`
+- **run-1** 856 ms
+  - in:  `i went to the store they were out of milk so i got juice instead`
+  - out: `I went to the store and they were out of milk, so I picked up juice instead.`
+- **casual-1** 865 ms
+  - in:  `lol thats so true, cant wait to see u guys`
+  - out: (rejected: MeaningFlip("negation"): "Lol, that's absolutely right—can't wait to see u guys!")
+- **casual-2** 666 ms
+  - in:  `gonna be late, traffic is crazy rn`
+  - out: (rejected: LostToken("gonna"): "I’ll be late—traffic is a mess right now.")
+- **mixed-1** 868 ms
+  - in:  `ok sige, see you later na lang kasi busy pa ako`
+  - out: `OK Sige, see you later na lang kasi busy pa ako.`  **RULE FAIL: lost "sige"**
+- **mixed-2** 858 ms
+  - in:  `the fiesta was so much fun, the lechon was amazing`
+  - out: `The fiesta was a blast and the lechon was absolutely fantastic.` / `The fiesta was incredible, and the lechon was to die for.`
+- **ok-1** 617 ms
+  - in:  `The meeting is at 3pm tomorrow.`
+  - out: (rejected: LostToken("3pm"): "The meeting will be tomorrow at 3 PM.")
+- **ok-2** 816 ms
+  - in:  `Thanks so much, I'll see you on Monday!`
+  - out: `Thanks a lot — seeing you on Monday is definitely on the books!` / `Appreciate it! I’ll catch up with you on Monday.`
+- **ok-3** 686 ms
+  - in:  `Not yet, but I'm almost done.`
+  - out: `Still not done, but I'm almost there.`
+- **ctx-1** 781 ms
+  - in:  `there going to be here soon, put the bags over their`
+  - out: `They're going to be here soon, so put the bags over theirs.` / `They'll be here soon, and the bags should be placed over theirs.`
+- **ctx-2** 847 ms
+  - in:  `this phone is way better then my old one and the camera is to good`
+  - out: `This phone is way better than my old one and the camera is too good.` / `The new phone is way better than the old one, and the camera is outstanding.`
+- **ctx-3** 915 ms
+  - in:  `it didnt effect me at all, I'm not sure its working`
+  - out: `It didn't affect me at all, I'm not sure if it's working.` / `The medicine didn't do anything for me, I'm not sure it's effective.`
+- **ctx-4** 733 ms
+  - in:  `there place is huge and its close to the station`
+  - out: `Their place is huge and it's close to the station.` / `Their apartment is huge and it's right near the station.`
+
+**Rephrase 26/30 usable (median 733 ms, p90 915 ms)**
+
+## App-like interleaving
+
+Correct right after a prediction: median 321 ms, max 354 ms
