@@ -46,6 +46,9 @@ struct App {
     issues: Vec<engine::Suggestion>,
     /// The issue whose card is showing because the mouse is over its underline.
     hover: Option<usize>,
+    /// Which fix the hover card is for (paragraph, start): underlines are renumbered
+    /// when results arrive, so the card must not follow the number.
+    hover_key: Option<(String, usize)>,
     /// When the mouse left both the underline and its card.
     hover_left: Option<std::time::Instant>,
     /// Predicted next words, shown as grey text after the caret (inline style).
@@ -54,6 +57,8 @@ struct App {
     show_list: bool,
     /// The current round only redoes Rephrase in a new style (other rows stay).
     restyle: bool,
+    /// The paragraph the caret was in at the last pass.
+    line: String,
 }
 
 static mut APP: Option<App> = None;
@@ -127,10 +132,12 @@ fn main() {
             list: vec![],
             issues: vec![],
             hover: None,
+            hover_key: None,
             hover_left: None,
             ghost: None,
             show_list: false,
             restyle: false,
+            line: String::new(),
             taskbar_created: RegisterWindowMessageW(w!("TaskbarCreated")),
         });
         popup::POPUP = Some(popup::Popup::create(inst));
@@ -164,6 +171,7 @@ fn on_typing(flags: usize) {
     }
     let a = app();
     a.hover = None;
+    a.hover_key = None;
     a.hover_left = None;
     if flags & KEY_EDITING != 0 {
         // Backspace, Enter, arrows, paste…: text may move anywhere, so hide underlines.
@@ -228,36 +236,60 @@ fn on_action(action: usize) {
         }
         ACT_ACCEPT => {
             let from_popup = if p.visible() { p.items.get(p.selected).cloned() } else { None };
+            engine::dlog(&format!("accept requested: popup_visible={} selected={} items={}", p.visible(), p.selected, p.items.len()));
             let Some(item) = from_popup.or_else(|| a.ghost.clone()) else { return };
             p.hide();
             a.engine.cancel();
             stop_pass_timers(a.hwnd);
             clear_underlines(a);
-            let caret_unmoved = a.reader.as_ref().map(|r| match r.read_focused() {
-                Ok(ctx) => text::composition(&ctx.before, &ctx.after).target == item.basis,
-                Err(_) => false,
-            });
-            match (caret_unmoved, &item.issue) {
-                (Some(true) | None, _) => {
-                    inject::apply(&item.plan);
-                }
-                // The caret moved (e.g. the user clicked the underlined word): select exactly
-                // that word, verified to still read the same, and type the fix over it.
-                (Some(false), Some(h)) => {
-                    let ok = a.reader.as_ref().is_some_and(|r| r.select_span(&item.para, h.start, h.end, &h.orig));
-                    if !ok {
-                        return;
+            let Some(ft) = a.reader.as_ref().and_then(|r| r.field_text()) else {
+                engine::dlog("accept: field unreadable");
+                return;
+            };
+            let before: String = ft.full[..ft.caret].iter().collect();
+            let caret_unmoved = text::composition(&before, "").target == item.basis;
+            let reader = a.reader.as_ref().unwrap();
+            engine::dlog(&format!(
+                "accept {:?} issue={:?} para={:?} basis_len={} caret={} caret_unmoved={caret_unmoved} delta={:?}",
+                item.kind, item.issue.as_ref().map(|h| (h.start, h.end, h.orig.clone(), h.repl.clone())), item.para, item.basis.chars().count(),
+                ft.caret, para_delta(&ft, &item)
+            ));
+            let applied = match (&item.issue, &item.fixed_para) {
+                // One fix in the paragraph being typed, caret where it was: Shift+Left from
+                // the caret and retype (the most widely compatible method; caret ends where it was).
+                (Some(_), _) if item.current && caret_unmoved => inject::apply(&item.plan),
+                // Anywhere else: find its paragraph by text, select exactly that word (verified
+                // to still read the same), type the fix, and put the caret back.
+                (Some(h), _) => match para_delta(&ft, &item) {
+                    Some(d) if reader.select_rel(&ft, d + h.start as isize, d + h.end as isize, &h.orig) => {
+                        let at = |o: usize| (ft.caret as isize + d + o as isize) as usize;
+                        inject::replace_and_restore(&ft.full, ft.caret, at(h.start), at(h.end), &h.repl)
                     }
-                    inject::replace_selection(&h.repl);
+                    _ => false,
+                },
+                // "Fix all" for a paragraph the caret isn't at the end of: retype that paragraph.
+                (None, Some(fixed)) if !(item.current && caret_unmoved) => {
+                    let para = item.para.trim_end();
+                    match ft.locate(para) {
+                        Some(d) if reader.select_rel(&ft, d, d + para.chars().count() as isize, para) => {
+                            let start = (ft.caret as isize + d) as usize;
+                            inject::replace_and_restore(&ft.full, ft.caret, start, start + para.chars().count(), fixed.trim_end())
+                        }
+                        _ => false,
+                    }
                 }
+                // Whole-text rows at the caret (Fix all, Improve, Rephrase, prediction).
+                _ if caret_unmoved => inject::apply(&item.plan),
                 // The text changed since the suggestion was made: applying it could corrupt it.
-                (Some(false), None) => return,
+                _ => false,
+            };
+            if !applied {
+                return;
             }
-            if item.issue.is_some() {
-                // Re-check the rest of the paragraph (the earlier correction is reused, no model call).
+            if item.issue.is_some() || item.fixed_para.is_some() {
+                // Re-check (earlier corrections are reused, so this is quick).
                 unsafe {
                     SetTimer(Some(a.hwnd), TIMER_DEBOUNCE, 150, None);
-                    SetTimer(Some(a.hwnd), TIMER_SETTLE, 400, None);
                 }
             }
             // Chain predictions like a phone keyboard: Tab, Tab, Tab…
@@ -294,99 +326,185 @@ fn on_results() {
     let a = app();
     let p = popup::get();
     let updates: Vec<engine::Update> = std::mem::take(&mut *a.engine.results.lock().unwrap());
+    let (mut changed, mut done, mut note) = (false, false, None);
     for u in updates {
-        if u.id != a.round {
-            continue; // superseded
+        let current_round = u.id == a.round;
+        // Corrections of unchanged text stay valid across rounds; everything else is superseded.
+        if !current_round && !u.sticky {
+            continue;
         }
         if u.hide {
-            p.hide();
-            a.list.clear();
-            clear_underlines(a);
-            if let (Some(note), Some(anchor)) = (u.note, fallback_anchor()) {
-                p.note = Some(note);
-                p.owner = anchor.0;
-                p.show_at(anchor.1);
+            if current_round {
+                p.hide();
+                a.list.clear();
+                clear_underlines(a);
+                if let (Some(n), Some(anchor)) = (u.note, fallback_anchor()) {
+                    p.note = Some(n);
+                    p.owner = anchor.0;
+                    p.show_at(anchor.1);
+                }
             }
             continue;
         }
-        let list = &mut a.list;
-        if let Some((h, caret)) = u.anchor {
-            let anchor = (HWND(h as _), caret);
-            a.anchor = Some(anchor);
-            if u.refresh {
-                // Predictions only come from the quick pass; keep them. A restyle only
-                // replaces Rephrase rows.
-                let restyle = a.restyle;
-                for it in list.iter_mut().filter(|i| i.kind != Kind::Next && (!restyle || i.kind == Kind::Rephrase)) {
-                    it.stale = true;
-                }
-            } else {
-                list.clear();
-                p.selected = 0;
+        changed = true;
+        if let (true, Some((h, caret))) = (current_round, u.anchor) {
+            a.anchor = Some((HWND(h as _), caret));
+            if let Some(l) = u.line {
+                a.line = l;
             }
-            p.owner = anchor.0;
+            // Re-evaluation: keep rows on screen until fresher ones replace them.
+            // A restyle only replaces Rephrase rows.
+            let restyle = a.restyle;
+            for it in a.list.iter_mut().filter(|i| !restyle || i.kind == Kind::Rephrase) {
+                it.stale = true;
+            }
+            p.owner = HWND(h as _);
             p.note = a.on_demand.then(|| "Checking…".to_string());
         }
-        for it in u.items {
-            if it.from_model {
-                // The model saw the whole message: it replaces the rule checker's rows and
-                // any rows of its kind left from an earlier pass.
-                list.retain(|e| !(e.kind == it.kind && (e.stale || !e.from_model)));
-            } else if list.iter().any(|e| e.kind == it.kind && e.from_model) {
-                continue; // a model row (even one awaiting refresh) beats the rule row
-            } else {
-                list.retain(|e| !(e.stale && e.kind == it.kind));
+        merge(&mut a.list, u.items);
+        if current_round {
+            if u.done {
+                a.list.retain(|e| !e.stale);
+                done = true;
+                a.on_demand = false;
             }
-            let dup = list.iter().any(|e| e.plan == it.plan && e.issue == it.issue);
-            if !dup && (!it.plan.insert.is_empty() || it.plan.select > 0) {
-                list.push(it);
-            }
+            note = note.or(u.note);
         }
-        if u.done {
-            list.retain(|e| !e.stale);
+    }
+    if !changed {
+        return;
+    }
+    let list = &mut a.list;
+    // Fix all, individual fixes in text order (current paragraph first), Improve, Rephrase, Next.
+    // Per kind: the current paragraph first, its "Fix all" before its individual fixes.
+    let key = |x: &engine::Suggestion| (x.kind, !x.current, x.stale, x.issue.is_some(), x.para.clone(), x.issue.as_ref().map(|h| h.start).unwrap_or(0));
+    list.sort_by(|x, y| key(x).cmp(&key(y)));
+    let inline = settings().inline && !a.show_list;
+    a.ghost = if inline { a.list.iter().find(|i| i.kind == Kind::Next && !i.stale).cloned() } else { None };
+    // A hover card the user is looking at is never replaced by a late result.
+    if a.hover.is_none() && inline {
+        if p.visible() {
+            p.hide();
         }
-        // Stable order: Fix all, individual fixes in text order, Improve, Rephrase, Next.
-        list.sort_by_key(|i| (i.kind, i.issue.as_ref().map(|h| h.start + 1).unwrap_or(0)));
-        list.truncate(9);
-        let issues: Vec<engine::Suggestion> = list.iter().filter(|i| i.issue.is_some()).cloned().collect();
-        let empty = list.is_empty();
-        let inline = settings().inline && !a.show_list;
-        a.ghost = if inline { a.list.iter().find(|i| i.kind == Kind::Next).cloned() } else { None };
-        if u.done {
-            a.on_demand = false;
+    } else if a.hover.is_none() {
+        p.compact = false;
+        // Style buttons whenever the list offers (or can offer) Rephrase.
+        p.styles = (a.show_list && settings().rewriting).then(|| settings().style);
+        // The list is about the paragraph being written; underlines cover the rest.
+        p.items = a.list.iter().filter(|e| e.current).take(9).cloned().collect();
+        p.selected = p.selected.min(p.items.len().saturating_sub(1));
+        p.busy = !done;
+        if !p.items.is_empty() {
+            p.note = None;
+        } else if let Some(n) = note {
+            p.note = Some(n);
+        } else if done && p.note.is_some() {
+            p.note = Some("Looks good. No suggestions.".into());
         }
-        // A hover card the user is looking at is never replaced by a late result.
-        if a.hover.is_none() && inline {
-            if p.visible() {
-                p.hide();
-            }
-        } else if a.hover.is_none() {
-            p.compact = false;
-            // Style buttons whenever the list offers (or can offer) Rephrase.
-            p.styles = (a.show_list && settings().rewriting).then(|| settings().style);
-            p.items = a.list.clone();
-            p.selected = p.selected.min(p.items.len().saturating_sub(1));
-            p.busy = !u.done;
-            if !empty {
-                p.note = None;
-            } else if let Some(n) = u.note {
-                p.note = Some(n);
-            } else if u.done && p.note.is_some() {
-                p.note = Some("Looks good. No suggestions.".into());
-            }
-            if let Some((_, caret)) = a.anchor {
-                p.show_at(caret);
-            }
+        if let Some((_, caret)) = a.anchor {
+            p.show_at(caret);
         }
-        update_underlines(a, issues);
+    }
+    update_underlines(a);
+}
+
+/// Rows replace older rows of the same kind for the same paragraph ("group"). The
+/// paragraph being typed is one group however much it grows. A fresh model row beats
+/// the rule checker's; stale rows stay visible until something replaces them.
+fn merge(list: &mut Vec<engine::Suggestion>, items: Vec<engine::Suggestion>) {
+    let group = |e: &engine::Suggestion| (e.kind, if e.current { String::new() } else { e.para.clone() });
+    let mut groups: Vec<(Kind, String)> = items.iter().map(group).collect();
+    groups.dedup();
+    let from_model = items.first().is_some_and(|i| i.from_model);
+    // Checks of the paragraph being typed keep running while the user types, so a check
+    // of an older (shorter) version can finish after a newer one: never let it win.
+    if from_model && items.iter().all(|i| i.current) {
+        let incoming = items[0].para.trim_end().to_string();
+        let newer_exists = list.iter().any(|e| {
+            e.current && e.from_model && !e.stale && e.kind == items[0].kind && e.para.trim_end().len() > incoming.len() && e.para.starts_with(engine::stable_prefix(&incoming))
+        });
+        if newer_exists {
+            return;
+        }
+    }
+    let mut skip: Vec<(Kind, String)> = vec![];
+    for g in &groups {
+        if from_model {
+            list.retain(|e| group(e) != *g);
+        } else if list.iter().any(|e| group(e) == *g && e.from_model && !e.stale) {
+            skip.push(g.clone());
+        } else {
+            list.retain(|e| !(group(e) == *g && e.stale && !e.from_model));
+        }
+    }
+    for it in items {
+        if skip.contains(&group(&it)) {
+            continue;
+        }
+        let dup = list.iter().any(|e| e.plan == it.plan && e.issue == it.issue && e.para == it.para);
+        if !dup && (!it.plan.insert.is_empty() || it.plan.select > 0 || it.issue.is_some() || it.fixed_para.is_some()) {
+            list.push(it);
+        }
     }
 }
 
-/// Underline every individual fix in the app's text field.
-fn update_underlines(a: &mut App, issues: Vec<engine::Suggestion>) {
+/// Where `item`'s paragraph starts relative to the caret. Found by its text; the
+/// paragraph being typed may have grown since, so a row computed on an earlier
+/// version still counts if that version is a prefix of the current line (fixes in
+/// the part still being typed are dropped).
+fn para_delta(ft: &uia::FieldText, item: &engine::Suggestion) -> Option<isize> {
+    if let Some(d) = ft.locate(&item.para) {
+        return Some(d);
+    }
+    if !item.current {
+        return None;
+    }
+    let lines = uia::lines(&ft.full);
+    let line = &lines[ft.caret_line()?];
+    let stable = engine::stable_prefix(&item.para);
+    let fits = item.issue.as_ref().is_some_and(|h| h.end <= stable.chars().count());
+    (fits && !stable.is_empty() && line.text.starts_with(stable)).then(|| line.start as isize - ft.caret as isize)
+}
+
+fn hover_key(it: &engine::Suggestion) -> (String, usize) {
+    (it.para.clone(), it.issue.as_ref().map(|h| h.start).unwrap_or(usize::MAX))
+}
+
+/// Most underlines drawn at once (each costs a UI Automation round trip).
+const MAX_UNDERLINES: usize = 40;
+
+/// Underline every individual fix in the whole text box.
+fn update_underlines(a: &mut App) {
     let ghost = a.ghost.as_ref().zip(a.anchor).map(|(g, (_, caret))| (caret, g.plan.insert.clone()));
-    if issues.is_empty() {
-        let owner = a.anchor.map(|x| x.0).unwrap_or_default();
+    let owner = a.anchor.map(|x| x.0).unwrap_or_default();
+    let Some(ft) = a.reader.as_ref().and_then(|r| r.field_text()) else {
+        clear_underlines(a);
+        return;
+    };
+    // Locate each fix; drop rows whose paragraph is gone (edited or deleted).
+    let mut located: Vec<(isize, isize, engine::Suggestion)> = vec![];
+    a.list.retain(|it| {
+        let Some(h) = &it.issue else {
+            // Whole-paragraph rows elsewhere must still find their paragraph.
+            return it.current || it.fixed_para.is_none() || ft.locate(&it.para).is_some();
+        };
+        match para_delta(&ft, it) {
+            Some(d) => {
+                located.push((d + h.start as isize, d + h.end as isize, it.clone()));
+                true
+            }
+            None => false,
+        }
+    });
+    // Where model and rule fixes overlap, the model's (which saw the whole message) wins.
+    located.sort_by_key(|(s, _, it)| (!it.from_model, it.stale, s.abs()));
+    let mut kept: Vec<(isize, isize, engine::Suggestion)> = vec![];
+    for (s, e, it) in located {
+        if kept.len() < MAX_UNDERLINES && !kept.iter().any(|(ks, ke, _)| s < *ke && *ks < e) {
+            kept.push((s, e, it));
+        }
+    }
+    if kept.is_empty() {
         overlay::get().hide();
         a.issues.clear();
         if ghost.is_some() {
@@ -395,30 +513,17 @@ fn update_underlines(a: &mut App, issues: Vec<engine::Suggestion>) {
         sync_tab();
         return;
     }
-    let para = issues[0].para.clone();
-    let spans: Vec<(usize, usize, String)> = issues
-        .iter()
-        .map(|i| {
-            let h = i.issue.as_ref().unwrap();
-            (h.start, h.end, h.orig.clone())
-        })
-        .collect();
-    let measured = a.reader.as_ref().and_then(|r| r.span_rects(&para, &spans));
-    engine::dlog(&format!(
-        "underline {} issue(s) {:?}: rects {:?}",
-        spans.len(),
-        spans.iter().map(|s| s.2.as_str()).collect::<Vec<_>>(),
-        measured.as_ref().map(|v| v.iter().map(|r| r.len()).collect::<Vec<_>>())
-    ));
-    let Some(rects) = measured else {
-        clear_underlines(a);
-        return;
-    };
+    let spans: Vec<(isize, isize, String)> = kept.iter().map(|(s, e, it)| (*s, *e, it.issue.as_ref().unwrap().orig.clone())).collect();
+    let rects = a.reader.as_ref().map(|r| r.rects_rel(&spans)).unwrap_or_default();
+    engine::dlog(&format!("underline {} fix(es), {} measured", spans.len(), rects.iter().filter(|r| !r.is_empty()).count()));
+    let issues: Vec<engine::Suggestion> = kept.into_iter().map(|k| k.2).collect();
     let color = |i: usize| if issues[i].kind == Kind::Improve { overlay::BLUE } else { overlay::RED };
     let hits: Vec<(usize, RECT, u32)> = rects.into_iter().enumerate().flat_map(|(i, rs)| rs.into_iter().map(move |r| (i, r, color(i)))).collect();
-    let owner = a.anchor.map(|x| x.0).unwrap_or_default();
     a.issues = issues;
     overlay::get().show(owner, hits, ghost);
+    // Keep the hovered fix highlighted under its new number.
+    a.hover = a.hover_key.as_ref().and_then(|k| a.issues.iter().position(|it| hover_key(it) == *k));
+    overlay::get().set_hover(a.hover);
     sync_tab();
     unsafe {
         SetTimer(Some(a.hwnd), TIMER_HOVER, 80, None);
@@ -440,6 +545,7 @@ fn clear_underlines(a: &mut App) {
     a.ghost = None;
     sync_tab();
     a.hover = None;
+    a.hover_key = None;
     a.hover_left = None;
     unsafe {
         let _ = KillTimer(Some(a.hwnd), TIMER_HOVER);
@@ -459,14 +565,22 @@ fn on_hover() {
         let mut r = RECT::default();
         GetWindowRect(p.hwnd, &mut r).is_ok() && pt.x >= r.left && pt.x <= r.right && pt.y >= r.top && pt.y <= r.bottom
     };
+    // The card sits on the line below the word: while the mouse is on the card, the
+    // underlines underneath it don't count (otherwise the card swaps under the click).
+    if over_card {
+        a.hover_left = None;
+        return;
+    }
     match overlay::get().hit(pt) {
-        Some((i, rect)) if a.hover != Some(i) && i < a.issues.len() => {
+        Some((i, rect)) if i < a.issues.len() && a.hover_key != Some(hover_key(&a.issues[i])) => {
             a.hover = Some(i);
+            a.hover_key = Some(hover_key(&a.issues[i]));
             overlay::get().set_hover(Some(i));
             a.hover_left = None;
             let kind = a.issues[i].kind;
             let mut items = vec![a.issues[i].clone()];
-            items.extend(a.list.iter().filter(|e| e.kind == kind && e.issue.is_none()).cloned());
+            let para = a.issues[i].para.clone();
+            items.extend(a.list.iter().filter(|e| e.kind == kind && e.issue.is_none() && e.para == para && e.fixed_para.is_some()).cloned());
             p.items = items;
             p.compact = settings().inline;
             p.note = None;
@@ -480,6 +594,7 @@ fn on_hover() {
             let left = *a.hover_left.get_or_insert_with(std::time::Instant::now);
             if left.elapsed() > std::time::Duration::from_millis(350) {
                 a.hover = None;
+                a.hover_key = None;
                 a.hover_left = None;
                 overlay::get().set_hover(None);
                 p.hide();
@@ -553,8 +668,7 @@ unsafe extern "system" fn main_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM
                 // Follow scrolling and window moves; drop the lines if the text changed.
                 let a = app();
                 if a.hover.is_none() && (!a.issues.is_empty() || a.ghost.is_some()) {
-                    let issues = a.issues.clone();
-                    update_underlines(a, issues);
+                    update_underlines(a);
                 }
                 LRESULT(0)
             }

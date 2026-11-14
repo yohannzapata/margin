@@ -1,24 +1,30 @@
 //! Suggestion pipeline.
 //!
-//!  main ──Job(id, pass)──▶ reader thread: UIA read → Composition → Harper (~5-40 ms) ──▶ main
+//!  main ──Job(id, pass)──▶ reader thread: UIA read → every paragraph → Harper (~5-40 ms) ──▶ main
 //!                                └──LlmJob──▶ model thread: predict / revise ──▶ main
 //!
+//! The whole text box is checked, paragraph by paragraph. The paragraph being typed
+//! is checked first; the others are checked once and cached until they change.
+//!
 //! Passes, all restarted by every keystroke:
-//!   Quick    (~180 ms pause)  Harper fixes + next-word prediction. Cheap.
-//!   Settle   (~700 ms pause, or right after . ? !)  model revision of the whole
-//!            paragraph in the chosen mode; an unfinished last sentence is protected.
-//!   Idle     (~2 s pause)  the paragraph is treated as a finished thought, so final
+//!   Quick    (~120 ms pause, or right after a word ends)  Harper + prediction +
+//!            model check of the current paragraph (unfinished last sentence protected).
+//!   Settle   (~400 ms pause)  the same, catching anything the quick pass skipped.
+//!   Idle     (~1.2 s pause)  the paragraph is treated as a finished thought, so final
 //!            punctuation may be suggested.
 //!   OnDemand (shortcut)  all three modes, finished.
-//! Every job carries an id. Typing advances the id; work for older ids is
-//! cancelled mid-generation and never reaches the screen.
+//!
+//! Model checks of the current paragraph are *not* cancelled while the user keeps
+//! typing at its end: the checked text is still a prefix of the paragraph, so its
+//! fixes stay valid and appear mid-typing. They are cancelled when earlier text is
+//! edited. Other work for superseded rounds is cancelled mid-generation.
 
 use crate::config::{InferenceMode, Settings};
-use crate::grammar::Grammar;
+use crate::grammar::{Analysis, Grammar};
 use crate::inference::{self, Mode, OpenAiCompat, Provider, Revision, Style};
 use crate::runtime::{self, LocalServer};
 use crate::text::{self, Composition, EditPlan, Run};
-use crate::uia::{FieldContext, Reader};
+use crate::uia::{self, FieldContext, Reader};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering::SeqCst};
 use std::sync::mpsc::{Receiver, Sender, channel};
@@ -68,8 +74,9 @@ impl Kind {
 pub struct Suggestion {
     pub kind: Kind,
     pub runs: Vec<Run>,
+    /// Edit from the caret (current paragraph only): Shift+Left then type.
     pub plan: EditPlan,
-    /// The paragraph text this was computed for; re-checked before applying.
+    /// The text before the caret this was computed for; re-checked before `plan` is used.
     pub basis: String,
     /// From the language model (replaces the rule checker's row of the same kind).
     pub from_model: bool,
@@ -77,9 +84,13 @@ pub struct Suggestion {
     pub stale: bool,
     /// A single fix within the paragraph (QuillBot-style), applied on its own.
     pub issue: Option<text::Hunk>,
-    /// The whole current line at compute time (text before + after the caret);
-    /// `issue` offsets are relative to its start.
+    /// The whole paragraph at compute time; `issue` offsets are relative to its start.
+    /// Paragraphs are found again by this text, wherever the caret is.
     pub para: String,
+    /// "Fix all" rows: the corrected paragraph, typed over the whole paragraph.
+    pub fixed_para: Option<String>,
+    /// Computed for the paragraph the caret was in.
+    pub current: bool,
 }
 
 impl Suggestion {
@@ -94,38 +105,39 @@ impl Suggestion {
     }
 }
 
-/// Most individual fixes listed at once; "Fix all" covers the rest.
-const MAX_ISSUES: usize = 6;
+/// Most individual fixes listed per paragraph; "Fix all" covers the rest.
+const MAX_ISSUES: usize = 8;
 
-/// A revision as one whole-text row ("Fix all" / "Improve") plus one row per individual change.
-fn correct_items(kind: Kind, target: &str, fixed: &str, after_on_line: &str, from_model: bool) -> Vec<Suggestion> {
-    let para = format!("{target}{after_on_line}");
-    let hunks = text::hunks(target, fixed);
+/// A revision as one whole-paragraph row ("Fix all" / "Improve") plus one row per
+/// individual change. `analyzed` is the text that was checked (for the current
+/// paragraph: up to the caret); `para` is the whole paragraph it starts.
+fn correct_items(kind: Kind, analyzed: &str, fixed: &str, para: &str, current: bool, from_model: bool) -> Vec<Suggestion> {
+    let rest: String = para.chars().skip(analyzed.chars().count()).collect();
+    let hunks = text::hunks(analyzed, fixed);
+    let base = Suggestion {
+        kind,
+        runs: vec![],
+        plan: EditPlan { select: 0, insert: String::new() },
+        basis: analyzed.to_string(),
+        from_model,
+        stale: false,
+        issue: None,
+        para: para.to_string(),
+        fixed_para: None,
+        current,
+    };
     let mut v = vec![];
     if hunks.len() != 1 {
         v.push(Suggestion {
-            kind,
-            runs: text::diff_words(target, fixed),
-            plan: text::plan_edit(target, fixed),
-            basis: target.to_string(),
-            from_model,
-            stale: false,
-            issue: None,
-            para: para.clone(),
+            runs: text::diff_words(analyzed, fixed),
+            plan: text::plan_edit(analyzed, fixed),
+            fixed_para: Some(format!("{fixed}{rest}")),
+            ..base.clone()
         });
     }
     for h in hunks.into_iter().take(MAX_ISSUES) {
-        let single = text::apply_hunk(target, &h);
-        v.push(Suggestion {
-            kind,
-            runs: vec![],
-            plan: text::plan_edit(target, &single),
-            basis: target.to_string(),
-            from_model,
-            stale: false,
-            issue: Some(h),
-            para: para.clone(),
-        });
+        let single = text::apply_hunk(analyzed, &h);
+        v.push(Suggestion { plan: text::plan_edit(analyzed, &single), issue: Some(h), ..base.clone() });
     }
     v
 }
@@ -134,6 +146,8 @@ pub struct Update {
     pub id: u64,
     /// Some on the first update of a job: where to show the popup.
     pub anchor: Option<(isize, RECT)>,
+    /// With the anchor: the paragraph the caret is in.
+    pub line: Option<String>,
     pub items: Vec<Suggestion>,
     /// Field not eligible (password, excluded, not editable): hide everything.
     pub hide: bool,
@@ -141,8 +155,8 @@ pub struct Update {
     pub note: Option<String>,
     /// No more updates will follow for this id.
     pub done: bool,
-    /// A re-evaluation of unchanged text: keep current rows until replaced.
-    pub refresh: bool,
+    /// Still valid after newer rounds started (corrections of unchanged text).
+    pub sticky: bool,
 }
 
 pub struct Job {
@@ -150,18 +164,26 @@ pub struct Job {
     pub pass: Pass,
 }
 
+/// Another paragraph of the same text box, checked in the background.
+struct ParaJob {
+    text: String,
+    before: String,
+    after: String,
+    analysis: Analysis,
+}
+
 struct LlmJob {
     id: u64,
     pass: Pass,
     comp: Composition,
-    hints: Vec<String>,
-    flagged: Vec<(String, String)>,
-    mixed_language: bool,
-    foreign: Vec<String>,
+    /// The whole paragraph the caret is in.
+    line: String,
+    analysis: Analysis,
     rules_ran: bool,
     caret_at_end: bool,
     /// Up to 300 chars before the caret, for prediction.
     context: String,
+    others: Vec<ParaJob>,
 }
 
 enum LlmMsg {
@@ -188,7 +210,7 @@ pub fn dlog(msg: &str) {
 }
 
 fn post_result(hwnd: isize, results: &Mutex<Vec<Update>>, u: Update) {
-    dlog(&format!("post id={} anchor={} items={:?} done={}", u.id, u.anchor.is_some(), u.items.iter().map(|i| i.tag()).collect::<Vec<_>>(), u.done));
+    dlog(&format!("post id={} anchor={} sticky={} items={:?} done={}", u.id, u.anchor.is_some(), u.sticky, u.items.iter().map(|i| i.tag()).collect::<Vec<_>>(), u.done));
     results.lock().unwrap().push(u);
     unsafe {
         let _ = PostMessageW(Some(HWND(hwnd as *mut _)), WM_APP_RESULT, WPARAM(0), LPARAM(0));
@@ -196,7 +218,19 @@ fn post_result(hwnd: isize, results: &Mutex<Vec<Update>>, u: Update) {
 }
 
 fn update(id: u64) -> Update {
-    Update { id, anchor: None, items: vec![], hide: false, note: None, done: false, refresh: false }
+    Update { id, anchor: None, line: None, items: vec![], hide: false, note: None, done: false, sticky: false }
+}
+
+/// The part of `target` that further typing at its end can't change: everything up
+/// to the last word boundary.
+pub fn stable_prefix(target: &str) -> &str {
+    if target.ends_with(char::is_whitespace) {
+        return target;
+    }
+    match target.rfind(char::is_whitespace) {
+        Some(i) => &target[..i],
+        None => "",
+    }
 }
 
 impl Engine {
@@ -204,20 +238,21 @@ impl Engine {
         let latest = Arc::new(AtomicU64::new(0));
         let results = Arc::new(Mutex::new(Vec::new()));
         let settings = Arc::new(Mutex::new(settings));
+        let live_line = Arc::new(Mutex::new(String::new()));
         let (jtx, jrx) = channel::<Job>();
         let (ltx, lrx) = channel::<LlmMsg>();
         {
-            let (latest, results, settings, ltx) = (latest.clone(), results.clone(), settings.clone(), ltx.clone());
+            let (latest, results, settings, ltx, live) = (latest.clone(), results.clone(), settings.clone(), ltx.clone(), live_line.clone());
             std::thread::Builder::new()
                 .name("margin-reader".into())
-                .spawn(move || reader_thread(main_hwnd, jrx, ltx, latest, results, settings))
+                .spawn(move || reader_thread(main_hwnd, jrx, ltx, latest, results, settings, live))
                 .unwrap();
         }
         {
-            let (latest, results, s) = (latest.clone(), results.clone(), settings.lock().unwrap().clone());
+            let (latest, results, s, live) = (latest.clone(), results.clone(), settings.lock().unwrap().clone(), live_line);
             std::thread::Builder::new()
                 .name("margin-model".into())
-                .spawn(move || model_thread(main_hwnd, lrx, latest, results, s))
+                .spawn(move || model_thread(main_hwnd, lrx, latest, results, s, live))
                 .unwrap();
         }
         Engine { latest, jobs: jtx, llm: ltx, results, settings }
@@ -241,7 +276,18 @@ impl Engine {
     }
 }
 
-fn reader_thread(hwnd: isize, jobs: Receiver<Job>, llm: Sender<LlmMsg>, latest: Arc<AtomicU64>, results: Arc<Mutex<Vec<Update>>>, settings: Arc<Mutex<Settings>>) {
+/// Paragraphs other than the current one that are checked, nearest first.
+const MAX_OTHER_PARAS: usize = 20;
+
+fn reader_thread(
+    hwnd: isize,
+    jobs: Receiver<Job>,
+    llm: Sender<LlmMsg>,
+    latest: Arc<AtomicU64>,
+    results: Arc<Mutex<Vec<Update>>>,
+    settings: Arc<Mutex<Settings>>,
+    live_line: Arc<Mutex<String>>,
+) {
     unsafe {
         let _ = windows::Win32::System::Com::CoInitializeEx(None, windows::Win32::System::Com::COINIT_MULTITHREADED);
     }
@@ -280,27 +326,53 @@ fn reader_thread(hwnd: isize, jobs: Receiver<Job>, llm: Sender<LlmMsg>, latest: 
             post_result(hwnd, &results, hide(None));
             continue;
         }
-        dlog(&format!(
-            "read {:?}: exe={} via={} caret=({},{},{},{}) before_len={} after_on_line={:?}",
-            job.pass, ctx.exe, ctx.source, ctx.caret.left, ctx.caret.top, ctx.caret.right, ctx.caret.bottom,
-            ctx.before.chars().count(), ctx.after_on_line.chars().take(20).collect::<String>()
-        ));
         grammar.set_dialect(s.dialect());
 
         let comp = text::composition(&ctx.before, &ctx.after);
+        let before_line: String = ctx.before.rsplit(['\n', '\r']).next().unwrap_or("").to_string();
+        let line = format!("{before_line}{}", ctx.after_on_line);
+        *live_line.lock().unwrap() = line.clone();
         let caret_at_end = ctx.after_on_line.trim().is_empty();
         let finished = comp.ends_sentence || matches!(job.pass, Pass::Idle | Pass::OnDemand | Pass::Restyle(_));
+
+        // The current paragraph, up to the caret (its last word may still be typed).
         let analysis = if s.grammar && !comp.target.trim().is_empty() { grammar.analyze(&comp.target, finished) } else { Default::default() };
-        let items = match &analysis.fixed {
-            Some(fixed) => correct_items(Kind::Correct, &comp.target, fixed, &ctx.after_on_line, false),
+        let mut items = match &analysis.fixed {
+            Some(fixed) => correct_items(Kind::Correct, &comp.target, fixed, &line, true, false),
             None => vec![],
         };
-        let refresh = matches!(job.pass, Pass::Settle | Pass::Idle | Pass::Restyle(_));
+
+        // Every other paragraph of the text box: finished text, checked whole.
+        let mut full: Vec<char> = ctx.before.chars().collect();
+        let caret = full.len();
+        full.extend(ctx.after.chars());
+        let all = uia::lines(&full);
+        let ci = all.iter().position(|l| l.start <= caret && caret <= l.start + l.text.chars().count()).unwrap_or(0);
+        let mut order: Vec<usize> = (0..all.len()).filter(|&i| i != ci && text::word_count(&all[i].text) >= 2).collect();
+        order.sort_by_key(|&i| i.abs_diff(ci));
+        order.truncate(MAX_OTHER_PARAS);
+        let mut others = vec![];
+        if s.grammar {
+            for i in order {
+                let t = &all[i].text;
+                let a = grammar.analyze(t, true);
+                if let Some(fixed) = &a.fixed {
+                    items.extend(correct_items(Kind::Correct, t, fixed, t, false, false));
+                }
+                let before: String = all[..i].iter().map(|l| l.text.as_str()).collect::<Vec<_>>().join("\n");
+                let after: String = all[i + 1..].iter().map(|l| l.text.as_str()).collect::<Vec<_>>().join("\n");
+                let before: String = before.chars().rev().take(600).collect::<Vec<_>>().into_iter().rev().collect();
+                let after: String = after.chars().take(300).collect();
+                others.push(ParaJob { text: t.clone(), before, after, analysis: a });
+            }
+        }
+        dlog(&format!("read {:?}: exe={} via={} paragraphs={} others={}", job.pass, ctx.exe, ctx.source, all.len(), others.len()));
+
         post_result(hwnd, &results, Update {
             anchor: Some((ctx.hwnd.0 as isize, ctx.caret)),
+            line: Some(line.clone()),
             items,
             done: !s.ai_enabled(),
-            refresh,
             ..update(job.id)
         });
         if s.ai_enabled() {
@@ -312,13 +384,12 @@ fn reader_thread(hwnd: isize, jobs: Receiver<Job>, llm: Sender<LlmMsg>, latest: 
                 id: job.id,
                 pass: job.pass,
                 comp,
-                hints: analysis.hints,
-                flagged: analysis.flagged,
-                mixed_language: analysis.mixed_language,
-                foreign: analysis.foreign,
+                line,
+                analysis,
                 rules_ran: s.grammar,
                 caret_at_end,
                 context,
+                others,
             }));
         }
     }
@@ -373,17 +444,18 @@ pub fn warm_up(p: &dyn Provider) {
     }
 }
 
-/// Which modes to run for a job.
+/// Which modes to run for the current paragraph.
 fn modes_for(s: &Settings, pass: Pass, finished: bool) -> Vec<Mode> {
     let allowed = |m: Mode| match m {
         Mode::Correct => s.grammar,
         Mode::Improve | Mode::Rephrase => s.rewriting,
     };
     let mut v: Vec<Mode> = match pass {
-        Pass::Quick => vec![],
         Pass::OnDemand => vec![Mode::Correct, Mode::Improve, Mode::Rephrase],
         Pass::Restyle(_) => vec![Mode::Rephrase],
-        Pass::Settle | Pass::Idle => {
+        // Every typing pass checks right away (measured: waiting for a longer pause
+        // was most of the delay users noticed).
+        Pass::Quick | Pass::Settle | Pass::Idle => {
             let m = if allowed(s.writing_mode) { s.writing_mode } else { Mode::Correct };
             vec![m]
         }
@@ -413,7 +485,7 @@ fn still_valid(last: &Option<(String, String, String, String)>, comp: &Compositi
 /// (3072 tokens) holds instructions, examples, context and the reply.
 const MAX_TARGET_CHARS: usize = 1400;
 
-fn model_thread(hwnd: isize, rx: Receiver<LlmMsg>, latest: Arc<AtomicU64>, results: Arc<Mutex<Vec<Update>>>, initial: Settings) {
+fn model_thread(hwnd: isize, rx: Receiver<LlmMsg>, latest: Arc<AtomicU64>, results: Arc<Mutex<Vec<Update>>>, initial: Settings, live_line: Arc<Mutex<String>>) {
     let mut settings = initial;
     let mut backend = if settings.ai_enabled() { build_backend(&settings) } else { Backend::None("AI features are off".into()) };
     // In-memory only; never written to disk.
@@ -468,27 +540,13 @@ fn model_thread(hwnd: isize, rx: Receiver<LlmMsg>, latest: Arc<AtomicU64>, resul
             }
         };
         let comp = &job.comp;
+        let explicit = matches!(job.pass, Pass::OnDemand | Pass::Restyle(_));
 
         // 1. Prediction (latency-sensitive, so first). Only at the end of a line,
         //    and not right after a finished sentence.
-        dlog(&format!(
-            "job {} {:?} caret_at_end={} ends_sentence={} predictive={} ctx_tail={:?}",
-            id, job.pass, job.caret_at_end, comp.ends_sentence, settings.predictive,
-            job.context.chars().rev().take(20).collect::<String>().chars().rev().collect::<String>()
-        ));
-        // Every typing pass predicts (cached, so repeats are free): when the model is busy
-        // or still loading, queued passes are coalesced and the quick one may be dropped.
-        if !matches!(job.pass, Pass::OnDemand | Pass::Restyle(_)) && settings.predictive && job.caret_at_end && !comp.ends_sentence && !job.context.trim().is_empty() {
+        if !explicit && settings.predictive && job.caret_at_end && !comp.ends_sentence && !job.context.trim().is_empty() {
             let ctx = job.context.clone();
-            let pred = predictions
-                .entry(ctx.clone())
-                .or_insert_with(|| {
-                    let raw = provider.complete(&ctx);
-                    dlog(&format!("complete -> {raw:?}"));
-                    raw.ok().and_then(|raw| text::normalize_completion(&ctx, &raw))
-                })
-                .clone();
-            dlog(&format!("prediction {pred:?}"));
+            let pred = predictions.entry(ctx.clone()).or_insert_with(|| provider.complete(&ctx).ok().and_then(|raw| text::normalize_completion(&ctx, &raw))).clone();
             if predictions.len() > 256 {
                 predictions.clear();
             }
@@ -508,7 +566,9 @@ fn model_thread(hwnd: isize, rx: Receiver<LlmMsg>, latest: Arc<AtomicU64>, resul
                             from_model: true,
                             stale: false,
                             issue: None,
-                            para: comp.target.clone(),
+                            para: job.line.clone(),
+                            fixed_para: None,
+                            current: true,
                         }],
                         ..update(id)
                     });
@@ -516,8 +576,7 @@ fn model_thread(hwnd: isize, rx: Receiver<LlmMsg>, latest: Arc<AtomicU64>, resul
             }
         }
 
-        // 2. Revisions of the whole paragraph, with the rest of the message as context.
-        // A just-finished sentence is worth revising immediately, without waiting to settle.
+        // 2. The current paragraph, with the rest of the message as context.
         let pass = if job.pass == Pass::Quick && comp.ends_sentence { Pass::Settle } else { job.pass };
         let finished = comp.ends_sentence || matches!(pass, Pass::Idle | Pass::OnDemand | Pass::Restyle(_));
         let style = match job.pass {
@@ -526,16 +585,22 @@ fn model_thread(hwnd: isize, rx: Receiver<LlmMsg>, latest: Arc<AtomicU64>, resul
         };
         // Very long paragraphs get rule fixes only: they'd overflow the model's context slot.
         let fits = comp.target.chars().count() <= MAX_TARGET_CHARS;
-        let modes = if fits && text::word_count(&comp.target) >= 2 { modes_for(&settings, pass, finished) } else { vec![] };
+        let mut modes = if fits && text::word_count(&comp.target) >= 2 { modes_for(&settings, pass, finished) } else { vec![] };
         if !modes.is_empty() && !job.caret_at_end {
-            if matches!(job.pass, Pass::OnDemand | Pass::Restyle(_)) {
+            if explicit {
                 post_result(hwnd, &results, Update { note: Some("Move the cursor to the end of the line to check it".into()), done: true, ..update(id) });
+                continue;
             }
-            continue;
+            modes.clear(); // other paragraphs are still checked below
         }
+        // Typing on at the end keeps the checked text a prefix: don't throw that work away.
+        let stable = stable_prefix(&comp.target).to_string();
+        let diverged = || !live_line.lock().unwrap().starts_with(stable.as_str());
+        let correction_cancelled = || stale() && diverged();
         let mut posted = false;
         for mode in &modes {
-            if stale() {
+            let sticky = *mode == Mode::Correct && !explicit;
+            if if sticky { correction_cancelled() } else { stale() } {
                 break;
             }
             let key: CacheKey = (*mode, style, finished, comp.before.clone(), comp.target.clone(), comp.after.clone());
@@ -543,21 +608,23 @@ fn model_thread(hwnd: isize, rx: Receiver<LlmMsg>, latest: Arc<AtomicU64>, resul
             let cands = match revisions.get(&key).cloned().or(reusable) {
                 Some(v) => v,
                 None => {
+                    let a = &job.analysis;
                     let r = Revision {
                         before: &comp.before,
                         target: &comp.target,
                         after: &comp.after,
                         finished,
-                        hints: &job.hints,
-                        flagged: &job.flagged,
-                        mixed_language: job.mixed_language,
-                        foreign: &job.foreign,
+                        hints: &a.hints,
+                        flagged: &a.flagged,
+                        mixed_language: a.mixed_language,
+                        foreign: &a.foreign,
                         rules_ran: job.rules_ran,
                         style,
                     };
-                    match inference::suggest(provider, *mode, &r, &stale) {
+                    let cancel: &dyn Fn() -> bool = if sticky { &correction_cancelled } else { &stale };
+                    match inference::suggest(provider, *mode, &r, cancel) {
                         Ok(v) => {
-                            if revisions.len() > 256 {
+                            if revisions.len() > 512 {
                                 revisions.clear();
                             }
                             revisions.insert(key, v.clone());
@@ -578,33 +645,112 @@ fn model_thread(hwnd: isize, rx: Receiver<LlmMsg>, latest: Arc<AtomicU64>, resul
                 }
             }
             let items: Vec<Suggestion> = if *mode != Mode::Rephrase {
-                fixed.first().map(|c| correct_items(Kind::of(*mode), &comp.target, c, "", true)).unwrap_or_default()
+                fixed.first().map(|c| correct_items(Kind::of(*mode), &comp.target, c, &job.line, true, true)).unwrap_or_default()
             } else {
                 fixed
                     .iter()
                     .map(|c| Suggestion {
-                        kind: Kind::of(*mode),
-                        runs: if *mode == Mode::Rephrase { vec![Run { text: c.trim_end().to_string(), changed: false }] } else { text::diff_words(&comp.target, c) },
+                        kind: Kind::Rephrase,
+                        runs: vec![Run { text: c.trim_end().to_string(), changed: false }],
                         plan: text::plan_edit(&comp.target, c),
                         basis: comp.target.clone(),
                         from_model: true,
                         stale: false,
                         issue: None,
-                        para: comp.target.clone(),
+                        para: job.line.clone(),
+                        fixed_para: None,
+                        current: true,
                     })
                     .collect()
             };
-            if stale() {
+            if !sticky && stale() {
                 break;
             }
             if !items.is_empty() {
                 posted = true;
             }
-            post_result(hwnd, &results, Update { items, ..update(id) });
+            post_result(hwnd, &results, Update { items, sticky, ..update(id) });
+        }
+
+        // 3. Every other paragraph: cached until it changes, so this is usually free.
+        if settings.grammar && !matches!(job.pass, Pass::Restyle(_)) {
+            for pj in &job.others {
+                if pj.text.chars().count() > MAX_TARGET_CHARS {
+                    continue;
+                }
+                let key: CacheKey = (Mode::Correct, Style::Standard, true, pj.before.clone(), pj.text.clone(), pj.after.clone());
+                let cands = match revisions.get(&key) {
+                    Some(v) => v.clone(),
+                    None => {
+                        // A newer round goes first; this paragraph is redone then.
+                        if stale() {
+                            break;
+                        }
+                        let a = &pj.analysis;
+                        let r = Revision {
+                            before: &pj.before,
+                            target: &pj.text,
+                            after: &pj.after,
+                            finished: true,
+                            hints: &a.hints,
+                            flagged: &a.flagged,
+                            mixed_language: a.mixed_language,
+                            foreign: &a.foreign,
+                            rules_ran: job.rules_ran,
+                            style: Style::Standard,
+                        };
+                        match inference::suggest(provider, Mode::Correct, &r, &stale) {
+                            Ok(v) => {
+                                revisions.insert(key, v.clone());
+                                v
+                            }
+                            Err(e) if e == "cancelled" => break,
+                            Err(_) => {
+                                revisions.insert(key, vec![]);
+                                vec![]
+                            }
+                        }
+                    }
+                };
+                let items: Vec<Suggestion> = cands
+                    .first()
+                    .map(|c| text::keep_trailing_ws(&pj.text, c))
+                    .filter(|c| c.trim() != pj.text.trim())
+                    .map(|c| correct_items(Kind::Correct, &pj.text, &c, &pj.text, false, true))
+                    .unwrap_or_default();
+                if !items.is_empty() {
+                    post_result(hwnd, &results, Update { items, sticky: true, ..update(id) });
+                }
+            }
         }
         if !stale() {
-            let note = (matches!(job.pass, Pass::OnDemand | Pass::Restyle(_)) && !posted).then(|| "Looks good. No suggestions.".to_string());
+            let note = (explicit && !posted).then(|| "Looks good. No suggestions.".to_string());
             post_result(hwnd, &results, Update { note, done: true, ..update(id) });
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stable_prefix_drops_the_word_being_typed() {
+        assert_eq!(stable_prefix("I dont think tha"), "I dont think");
+        assert_eq!(stable_prefix("I dont think "), "I dont think ");
+        assert_eq!(stable_prefix("word"), "");
+    }
+
+    #[test]
+    fn correct_items_for_a_whole_paragraph() {
+        let items = correct_items(Kind::Correct, "i dont know", "I don't know.", "i dont know", false, false);
+        let fix_all = items.iter().find(|i| i.issue.is_none()).unwrap();
+        assert_eq!(fix_all.fixed_para.as_deref(), Some("I don't know."));
+        assert!(items.iter().filter(|i| i.issue.is_some()).all(|i| i.para == "i dont know" && !i.current));
+        // Current paragraph with text after the caret: the rest is kept.
+        let items = correct_items(Kind::Correct, "i dont ", "I don't ", "i dont know", true, false);
+        let fix_all = items.iter().find(|i| i.issue.is_none()).unwrap();
+        assert_eq!(fix_all.fixed_para.as_deref(), Some("I don't know"));
+        assert!(items.iter().all(|i| i.current && i.para == "i dont know"));
     }
 }

@@ -170,6 +170,10 @@ impl LocalServer {
             .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null())
             // CREATE_NO_WINDOW | BELOW_NORMAL_PRIORITY_CLASS: never compete with the foreground app.
             .creation_flags(0x0800_0000 | 0x0000_4000);
+        // Developer knob for benchmarking server flags.
+        if let Ok(extra) = std::env::var("MARGIN_LLAMA_EXTRA") {
+            cmd.args(extra.split_whitespace());
+        }
         let child = cmd.spawn().map_err(|e| format!("could not start AI runtime: {e}"))?;
         let job = unsafe { kill_on_close_job(&child) };
         let s = LocalServer { child, port, _job: job };

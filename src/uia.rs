@@ -28,6 +28,53 @@ pub struct FieldContext {
     pub source: &'static str,
 }
 
+/// Field text around the caret: `full[..caret]` is before it, `full[caret..]` after.
+#[derive(Debug, Clone)]
+pub struct FieldText {
+    pub full: Vec<char>,
+    pub caret: usize,
+    pub source: &'static str,
+}
+
+/// A paragraph (line) of the field: char offset in `full` and its text.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Line {
+    pub start: usize,
+    pub text: String,
+}
+
+/// Split field text into lines (paragraphs), keeping char offsets.
+pub fn lines(full: &[char]) -> Vec<Line> {
+    let mut out = vec![];
+    let mut start = 0;
+    for i in 0..=full.len() {
+        if i == full.len() || full[i] == '\n' || full[i] == '\r' {
+            out.push(Line { start, text: full[start..i].iter().collect() });
+            start = i + 1;
+        }
+    }
+    out
+}
+
+impl FieldText {
+    /// Index of the line containing the caret.
+    pub fn caret_line(&self) -> Option<usize> {
+        lines(&self.full).iter().position(|l| l.start <= self.caret && self.caret <= l.start + l.text.chars().count())
+    }
+
+    /// Where paragraph `para` starts, relative to the caret (negative = before it).
+    /// Paragraphs are found by their text, so this survives caret moves and edits
+    /// elsewhere. The nearest whole-line match wins.
+    pub fn locate(&self, para: &str) -> Option<isize> {
+        let para = para.trim_end();
+        lines(&self.full)
+            .into_iter()
+            .filter(|l| l.text.trim_end() == para)
+            .map(|l| l.start as isize - self.caret as isize)
+            .min_by_key(|d| d.abs())
+    }
+}
+
 #[derive(Debug)]
 pub enum Skip {
     NoFocus,
@@ -104,21 +151,21 @@ impl Reader {
         }
     }
 
-    /// The current line as (text, chars before the caret), if the field is readable.
-    fn line(&self) -> Option<(String, usize, FieldContext)> {
+    /// Snapshot of the field text around the caret (same window as `read_focused`).
+    pub fn field_text(&self) -> Option<FieldText> {
         let ctx = self.read_focused().ok()?;
-        let before_line = ctx.before.rsplit(['\n', '\r']).next().unwrap_or("").to_string();
-        let p0 = before_line.chars().count();
-        Some((format!("{before_line}{}", ctx.after_on_line), p0, ctx))
+        let mut full: Vec<char> = ctx.before.chars().collect();
+        let caret = full.len();
+        full.extend(ctx.after.chars());
+        Some(FieldText { full, caret, source: ctx.source })
     }
 
-    /// Range covering chars `start..end` of the current line, found relative to the
-    /// caret, and verified to contain `expect`.
-    unsafe fn span_range(&self, start: usize, end: usize, p0: usize, expect: &str) -> Option<IUIAutomationTextRange> {
+    /// Range from `ds` to `de` characters relative to the caret, verified to read `expect`.
+    unsafe fn range_rel(&self, ds: isize, de: isize, expect: &str) -> Option<IUIAutomationTextRange> {
         unsafe {
             let (_, caret) = self.caret()?;
             let r = caret.Clone().ok()?;
-            let (ds, de) = (start as i32 - p0 as i32, end as i32 - p0 as i32);
+            let (ds, de) = (ds as i32, de as i32);
             // Move the endpoint that keeps start <= end valid first.
             if ds < 0 {
                 r.MoveEndpointByUnit(TextPatternRangeEndpoint_Start, TextUnit_Character, ds).ok()?;
@@ -128,41 +175,27 @@ impl Reader {
                 r.MoveEndpointByUnit(TextPatternRangeEndpoint_Start, TextUnit_Character, ds).ok()?;
             }
             let got = r.GetText(-1).ok()?.to_string().replace('\u{a0}', " ");
+            crate::engine::dlog(&format!("range_rel {ds}..{de} expect={expect:?} got={got:?}"));
             (got == expect).then_some(r)
         }
     }
 
-    /// On-screen rectangles of each span of the current line, which must still read `para`.
-    /// None if the text changed or the field doesn't expose positions.
-    pub fn span_rects(&self, para: &str, spans: &[(usize, usize, String)]) -> Option<Vec<Vec<RECT>>> {
-        let (line, p0, _) = self.line()?;
-        if line.trim_end() != para.trim_end() {
-            return None;
-        }
-        unsafe {
-            let mut out = vec![];
-            for (s, e, expect) in spans {
-                let rects = self.span_range(*s, *e, p0, expect).map(|r| all_rects(&r)).unwrap_or_default();
-                out.push(rects);
-            }
-            Some(out)
-        }
+    /// On-screen rectangles for spans given relative to the caret, each verified to read
+    /// its expected text (empty when it doesn't, or when the field has no positions).
+    pub fn rects_rel(&self, spans: &[(isize, isize, String)]) -> Vec<Vec<RECT>> {
+        unsafe { spans.iter().map(|(s, e, expect)| self.range_rel(*s, *e, expect).map(|r| all_rects(&r)).unwrap_or_default()).collect() }
     }
 
-    /// Select chars `start..end` of the current line (which must still read `para`
-    /// and contain `expect` there), so typing replaces exactly that text.
-    pub fn select_span(&self, para: &str, start: usize, end: usize, expect: &str) -> bool {
-        let Some((line, p0, ctx)) = self.line() else { return false };
-        if line.trim_end() != para.trim_end() {
-            return false;
-        }
+    /// Select `ds..de` (relative to the caret), verified to read `expect`, so typing
+    /// replaces exactly that text.
+    pub fn select_rel(&self, ft: &FieldText, ds: isize, de: isize, expect: &str) -> bool {
         unsafe {
-            if let Some(r) = self.span_range(start, end, p0, expect) {
+            if let Some(r) = self.range_rel(ds, de, expect) {
                 return r.Select().is_ok();
             }
             // Classic Win32 EDIT: select by offset with EM_SETSEL.
-            if ctx.source == "Win32 Edit" {
-                return classic_select(&line, p0, start, end, expect);
+            if ft.source == "Win32 Edit" {
+                return classic_select(ft, ds, de, expect);
             }
             false
         }
@@ -284,24 +317,25 @@ unsafe fn all_rects(r: &IUIAutomationTextRange) -> Vec<RECT> {
 }
 
 /// EM_SETSEL on the focused classic EDIT control, after checking the text there.
-unsafe fn classic_select(line: &str, p0: usize, start: usize, end: usize, expect: &str) -> bool {
+unsafe fn classic_select(ft: &FieldText, ds: isize, de: isize, expect: &str) -> bool {
     unsafe {
         let mut gti = GUITHREADINFO { cbSize: size_of::<GUITHREADINFO>() as u32, ..Default::default() };
         if GetGUIThreadInfo(0, &mut gti).is_err() || gti.hwndFocus.0.is_null() {
             return false;
         }
-        let chars: Vec<char> = line.chars().collect();
-        if end > chars.len() || chars[start..end].iter().collect::<String>() != expect {
+        let (start, end) = (ft.caret as isize + ds, ft.caret as isize + de);
+        if start < 0 || end as usize > ft.full.len() || ft.full[start as usize..end as usize].iter().collect::<String>() != expect {
             return false;
         }
-        let u16_of = |n: usize| chars[..n].iter().map(|c| c.len_utf16()).sum::<usize>() as isize;
+        let u16_of = |n: usize| ft.full[..n].iter().map(|c| c.len_utf16()).sum::<usize>() as isize;
         const EM_GETSEL: u32 = 0x00B0;
         const EM_SETSEL: u32 = 0x00B1;
         let mut res = 0usize;
         SendMessageTimeoutW(gti.hwndFocus, EM_GETSEL, WPARAM(0), LPARAM(0), SMTO_ABORTIFHUNG, 100, Some(&mut res));
         let caret = ((res >> 16) & 0xFFFF) as isize;
-        let base = caret - u16_of(p0);
-        let (a, b) = (base + u16_of(start), base + u16_of(end));
+        // The snapshot may start mid-text (it's a window around the caret): offset from the caret.
+        let base = caret - u16_of(ft.caret);
+        let (a, b) = (base + u16_of(start as usize), base + u16_of(end as usize));
         if a < 0 {
             return false;
         }
@@ -400,6 +434,34 @@ pub fn window_title(hwnd: HWND) -> String {
         let mut buf = [0u16; 512];
         let n = GetWindowTextW(hwnd, &mut buf);
         String::from_utf16_lossy(&buf[..n.max(0) as usize])
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ft(before: &str, after: &str) -> FieldText {
+        let mut full: Vec<char> = before.chars().collect();
+        let caret = full.len();
+        full.extend(after.chars());
+        FieldText { full, caret, source: "test" }
+    }
+
+    #[test]
+    fn locates_paragraphs_by_text() {
+        let f = ft("Hi team,\nthe launch went well\nnext week we fix", " it");
+        assert_eq!(f.locate("Hi team,"), Some(-(f.caret as isize)));
+        assert_eq!(f.locate("the launch went well"), Some(9 - f.caret as isize));
+        assert_eq!(f.locate("next week we fix it"), Some(30 - f.caret as isize));
+        assert_eq!(f.locate("not there"), None);
+        assert_eq!(lines(&f.full)[f.caret_line().unwrap()].text, "next week we fix it");
+    }
+
+    #[test]
+    fn nearest_duplicate_wins() {
+        let f = ft("ok\nfar away\nok\n", "");
+        assert_eq!(f.locate("ok"), Some(12 - f.caret as isize));
     }
 }
 
