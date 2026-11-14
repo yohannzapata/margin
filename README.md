@@ -2,18 +2,30 @@
 
 A system-wide writing assistant for Windows. Margin works in the app you are typing in (browsers, chat apps, email, desktop apps) and suggests fixes and rewrites on the text itself. There is no separate window to paste into.
 
-![Mistakes underlined in place, with a fix under the hovered word](docs/inline.png)
+![An email draft with mistakes underlined in place](docs/demo-underlines.png)
+
+## Download
+
+Get `Margin-<version>-windows-x64.zip` from the [latest release](../../releases/latest), unzip it and run `Margin.exe`. There is nothing to install.
+
+- On first run Margin downloads its writing model in the background: about 2.4 GB on PCs with a 6 GB+ graphics card, 1.1 GB otherwise. Grammar underlines work right away.
+- Windows may show "Windows protected your PC" because the app isn't code-signed. Choose **More info → Run anyway**.
+- Margin lives in the notification area (the blue **M**). Right-click it for Settings, Pause and Quit.
 
 ## What it does
 
-- **Correct**: fixes spelling, grammar, capitalization and punctuation across the whole message, while keeping your wording and casual tone.
+- **Correct**: fixes spelling, grammar, capitalization and punctuation in every paragraph of the text box, while keeping your wording and casual tone.
 - **Improve**: makes the writing clearer and smoother without making a casual message formal.
-- **Rephrase**: gives two other ways to say the same thing, in five styles: Standard, Formal, Simple, Creative and Academic.
+- **Rephrase**: gives two other ways to say the same thing, in six styles: Standard, Formal, Corporate, Simple, Creative and Academic.
 - **Next-word prediction**: shows grey text after the cursor. Press Tab to type it.
 
-Mistakes get a solid underline and a light highlight on the word. Hover one to get a small pill with the fix, then click it or press Tab. The rest of your text is left alone. Ctrl+Shift+Space opens the full list with all modes and styles.
+Mistakes get a solid underline and a light highlight on the word, in any paragraph. Hover one to get a small pill with the fix, then click it or press Tab. Only that word changes, and your cursor goes back to where you were typing.
 
-![Rephrase styles](docs/styles.png)
+![Hovering a mistake shows the fix](docs/demo-pill.png)
+
+**Ctrl+Shift+Space** opens the full list for the paragraph you're writing: every fix, an improved version and rephrasings. Pick a style with the buttons on top, or with Alt+←/→.
+
+![The full list with the Corporate style](docs/demo-styles.png)
 
 ## How it works
 

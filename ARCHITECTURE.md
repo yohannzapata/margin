@@ -52,7 +52,7 @@ Margin is a background Windows app that offers predictive text, grammar and spel
   * *Settle* (700 ms, or immediately after `.`, `?` or `!`): model revision; an unfinished last sentence keeps its end and gets no final punctuation.
   * *Idle* (2 s): the text is treated as a finished thought, so a final period or question mark may be suggested.
   * Rephrase runs only on finished text.
-* **Rephrase styles (QuillBot-like):** Standard, Formal, Simple, Creative, Academic.
+* **Rephrase styles (QuillBot-like):** Standard, Formal, Corporate (workplace tone: clear, courteous, action-oriented), Simple, Creative, Academic.
   * The full list (Ctrl+Shift+Space) has style buttons across the top. Clicking one, or Alt+←/→, redoes only the Rephrase rows in that style and saves it as the default (also in Settings).
   * Style instructions are sent with each request, so each mode's cached system prompt is reused.
   * Validation adapts per style. Only Standard must keep slang ("gonna", "rn"); Formal, Simple and Academic may write it out. Academic and Creative may replace more of the wording. Negation, thanks, apologies, names and numbers are protected in every style.
