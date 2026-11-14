@@ -197,7 +197,9 @@ pub fn check_with(mode: Mode, orig: &str, cand: &str, finished: bool, rules: &Ru
         Mode::Correct => {
             for &i in &ra {
                 let w = &a[i];
-                let confusable = rb.iter().any(|&j| same_group(w, &b[j])) || ["a", "an", "the"].contains(&w.as_str());
+                // Swapped within its group (there→their, a→an). Dropping an article is not
+                // "free": measured, the model deleted "the" from correct sentences.
+                let confusable = rb.iter().any(|&j| same_group(w, &b[j]));
                 // A flagged word may only be replaced by what the checker suggested (or removed if it said so).
                 let hinted = rules.flagged.iter().any(|(o, r)| norm(o) == *w && (words(r).is_empty() || words(r).iter().all(|rw| b.contains(rw))));
                 // Without rule-checker information, allow a near-identical respelling.
@@ -311,6 +313,13 @@ mod tests {
         assert!(check_with(Rephrase, o, c, true, &formal).is_ok());
         // Negation still can't be lost in any style.
         assert!(check_with(Rephrase, "I can't come tonight.", "I will come tonight.", true, &formal).is_err());
+    }
+
+    #[test]
+    fn dropping_an_article_is_rejected() {
+        let o = "i think its the best day of the summer";
+        assert!(check(Correct, o, "I think it's best day of the summer.", true, &[]).is_err());
+        assert!(check(Correct, "this is an test", "This is a test.", true, &[]).is_ok());
     }
 
     #[test]

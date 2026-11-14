@@ -72,11 +72,24 @@ impl Grammar {
 
         // Prefer a suggestion that only adds an apostrophe or capital letter over a
         // different word: "sarahs" → "Sarah's", not "Sara's".
+        let words = |s: &str| s.split_whitespace().count();
         let best = |l: &harper_core::linting::Lint| -> String {
             let o = orig_of(l);
             let all: Vec<String> = l.suggestions.iter().map(|s| repl_of(s, &o)).collect();
-            all.iter().find(|r| l.lint_kind == LintKind::Spelling && letters(r) == letters(&o)).cloned().unwrap_or_else(|| all[0].clone())
+            if let Some(r) = all.iter().find(|r| l.lint_kind == LintKind::Spelling && letters(r) == letters(&o)) {
+                return r.clone();
+            }
+            // Prefer a suggestion that keeps every word ("its the" → "it's the", not "its").
+            all.iter().find(|r| words(r) >= words(&o)).cloned().unwrap_or_else(|| all[0].clone())
         };
+        // A fix that deletes words is only trusted when the flagged text really repeats a
+        // word ("the the"). Measured: Harper turns "its the best" into "its best".
+        let repeats = |s: &str| {
+            let w: Vec<String> = s.split_whitespace().map(letters).collect();
+            w.windows(2).any(|p| p[0] == p[1])
+        };
+        let drops_words = |l: &harper_core::linting::Lint| words(&best(l)) < words(&orig_of(l)) && !repeats(&orig_of(l));
+        lints.retain(|l| !drops_words(l));
 
         // A spelling flag whose fix only adds an apostrophe ("dont" → "don't") is an
         // English slip. Several flags that aren't suggest words from another language.
@@ -114,7 +127,6 @@ impl Grammar {
                 continue;
             }
             out.extend_from_slice(&src[pos..l.span.start]);
-            let o = orig_of(l);
             out.extend(best(l).chars());
             pos = l.span.end;
             changed = true;
@@ -153,6 +165,14 @@ mod tests {
     fn clean_sentence_is_none() {
         let mut g = Grammar::new(Dialect::American);
         assert_eq!(g.correct("The meeting is at three tomorrow.", true), None);
+    }
+
+    #[test]
+    fn does_not_drop_words_from_correct_text() {
+        let mut g = Grammar::new(Dialect::American);
+        let a = g.analyze("we went to the beach yesterday and i think its the best day of the summer", true);
+        let fixed = a.fixed.unwrap_or_default();
+        assert!(fixed.contains("the best day"), "{fixed:?} flagged {:?}", a.flagged);
     }
 
     #[test]
