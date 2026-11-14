@@ -57,7 +57,14 @@ Margin is a background Windows app that offers predictive text, grammar and spel
   * Style instructions are sent with each request, so each mode's cached system prompt is reused.
   * Validation adapts per style. Only Standard must keep slang ("gonna", "rn"); Formal, Simple and Academic may write it out. Academic and Creative may replace more of the wording. Negation, thanks, apologies, names and numbers are protected in every style.
   * Measured on 10 varied sentences with Qwen3-4B: 8–9 of 10 usable per style (`bench/styles-*.md`). Screenshot: `docs/styles.png`.
-* **Speed:** underlines stay on screen while typing and refresh as soon as a word ends (space or punctuation). The quick pass runs after 120 ms, the model pass after 400 ms, and the "finished thought" pass after 1.2 s. Measured: underlines are visible during continuous typing, and model results arrive about 0.3 s after the last key.
+* **The whole text box is checked:** every paragraph (up to 20 around the caret) gets the rule checker. The model checks the current paragraph first, then the others, each cached until it changes. Underlines and fixes work in any paragraph.
+  * A paragraph is found again by its text, not by a stored offset, so fixes land correctly after the caret moves or other text changes.
+  * Applying a fix elsewhere selects exactly that word (verified to still read the same), types the fix, and moves the caret back to where the user was typing.
+* **Speed:** underlines stay on screen while typing and refresh as soon as a word ends (space or punctuation).
+  * The model checks the current paragraph on every quick pass (120 ms after a pause, or at once after a word ends).
+  * In-flight checks are **not cancelled** while the user keeps typing at the end of the paragraph: the checked text is still a prefix, so its fixes stay valid and appear mid-typing. A check of an older version never replaces a newer one.
+  * Measured: underlines visible throughout continuous typing; model fixes about 0.3 s after the last key.
+  * n-gram speculative decoding was tried and rejected: it was slower here (615–783 ms vs 442 ms per correction).
 * **Suggestions on the text (default):**
   * No popup appears while typing. Each mistake gets a solid underline and a light highlight drawn on the word (red for correctness, blue for clarity/Improve). The highlight darkens when hovered.
   * Hovering a word opens a small pill strip right under it: the fix ("that's") and "Fix all". Click a pill, or press Tab.
@@ -103,6 +110,7 @@ Only results from `examples/e2e.rs` or a manual `--probe` run count. Tested 2026
 | Full app: type, popup, Tab | **Pass** | Popup appeared 326 ms after the last key; focus stayed in the field; Tab applied the fix and wasn't typed into the field. |
 | Underlines + hover card + single fix (RichEdit, Edge textarea, Edge chat editor) | **Pass** | Underlines 200–300 ms after the last key. A single fix applies both with the caret at the end and after clicking into the word (`e2e underline`). |
 | Inline grey prediction → Tab (RichEdit), no popup shown | **Pass** | Grey text 0.5 s after the last key. Found a bug on the way: predictions were lost when queued passes were coalesced while the model was busy. |
+| Fix in an earlier paragraph while typing in the next (RichEdit, Edge textarea, Edge rich editor) | **Pass** | Paragraph 1 underlined about 100 ms after typing stops in paragraph 2. Only the clicked word changes, and the caret returns to the end of paragraph 2 (`e2e paragraphs`). |
 | Model server lifecycle | **Pass** | Killed when Margin is force-killed (job object). |
 | Real Messenger, Facebook, Gmail, Outlook web, WhatsApp Web, Reddit | **Not tested** | Needs your sign-in; use `margin.exe --probe out.txt` |
 | Discord, Teams, Outlook (desktop) | **Not tested** | Same |
