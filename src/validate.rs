@@ -228,7 +228,7 @@ pub fn check_with(mode: Mode, orig: &str, cand: &str, finished: bool, rules: &Ru
             let (min_kept, len_range) = match rules.style {
                 Style::Standard => (20, 0.5..=1.8),
                 Style::Simple => (15, 0.4..=1.6),
-                Style::Formal => (15, 0.5..=2.2),
+                Style::Formal | Style::Corporate => (15, 0.5..=2.2),
                 // Measured: correct academic/creative paraphrases replace most words.
                 Style::Academic | Style::Creative => (10, 0.5..=2.2),
             };

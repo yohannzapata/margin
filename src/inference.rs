@@ -38,18 +38,20 @@ pub enum Style {
     #[default]
     Standard,
     Formal,
+    Corporate,
     Simple,
     Creative,
     Academic,
 }
 
 impl Style {
-    pub const ALL: [Style; 5] = [Style::Standard, Style::Formal, Style::Simple, Style::Creative, Style::Academic];
+    pub const ALL: [Style; 6] = [Style::Standard, Style::Formal, Style::Corporate, Style::Simple, Style::Creative, Style::Academic];
 
     pub fn label(self) -> &'static str {
         match self {
             Style::Standard => "Standard",
             Style::Formal => "Formal",
+            Style::Corporate => "Corporate",
             Style::Simple => "Simple",
             Style::Creative => "Creative",
             Style::Academic => "Academic",
@@ -62,6 +64,7 @@ impl Style {
         match self {
             Style::Standard => "STYLE: standard. Keep the writer's own tone and level of formality; casual stays casual.",
             Style::Formal => "STYLE: formal. Polished and professional, suitable for a work email: no slang or text-speak, no contractions, complete sentences, courteous wording.",
+            Style::Corporate => "STYLE: corporate. Professional workplace tone for colleagues, managers and clients: clear, confident, courteous and action-oriented. Lead with the point, use plain business language (no slang, no jargon or buzzwords), and keep it concise. Contractions are fine.",
             Style::Simple => "STYLE: simple. Plain and easy to read: short sentences and common everyday words, no jargon. Anyone should understand it at first read.",
             Style::Creative => "STYLE: creative. Vivid and expressive: fresh word choices and livelier phrasing. Say the same thing; do not add new facts, events or opinions.",
             Style::Academic => "STYLE: academic. Scholarly and precise: objective tone, formal vocabulary, no contractions or slang. Keep \"I\" if the writer talks about themselves.",
@@ -226,6 +229,11 @@ fn shots(mode: Mode) -> &'static [(&'static str, &'static str)] {
                 r#"{"text": "Did you get a chance to look at Mark's email about the"}"#,
             ),
             ("TEXT:\nSige, I'll call you later.\n\nSTATUS: complete", r#"{"text": "Sige, I'll call you later."}"#),
+            // there/their/they're and possessives of day names: measured misses.
+            (
+                "TEXT:\nthere both good options but i think mondays plan is better\n\nSTATUS: complete",
+                r#"{"text": "They're both good options, but I think Monday's plan is better."}"#,
+            ),
         ],
         Mode::Improve => &[(
             "TEXT:\nso basically the thing is that i cant come tomorrow, i cant come because i have work, sorry about that\n\nSTATUS: complete",
