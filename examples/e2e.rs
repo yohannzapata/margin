@@ -104,6 +104,16 @@ fn main() {
         }
     }
 
+    if only == "demo" {
+        set_inline(true);
+        report.push(format!("{:<34} {}", "Demo screenshots", fmt(demo_case(&reader, &uia))));
+    }
+
+    if only == "newline" {
+        set_inline(true);
+        report.push(format!("{:<34} {}", "New line: previous paragraph kept", fmt(newline_case(&reader))));
+    }
+
     if only == "styles" {
         set_inline(true);
         report.push(format!("{:<34} {}", "Styles: list → Formal → apply", fmt(style_case(&reader))));
@@ -469,6 +479,186 @@ fn paragraphs_case(reader: &Reader, uia: &IUIAutomation, edge_field: Option<&str
         }
     }
     let _ = host.wait();
+    let _ = Command::new("taskkill").args(["/F", "/PID", &app.id().to_string()]).output();
+    let _ = app.wait();
+    result
+}
+
+/// Types a short business email into tests/pages/demo.html and captures the README
+/// screenshots into $MARGIN_SHOTS: underlines, the pill on a hovered word, and the
+/// style list (Corporate).
+fn demo_case(reader: &Reader, uia: &IUIAutomation) -> std::result::Result<String, String> {
+    let dir = std::path::PathBuf::from(std::env::var("MARGIN_SHOTS").map_err(|_| "set MARGIN_SHOTS")?);
+    let paras = [
+        "Hi Sarah,",
+        "Thank you for sending the quarterly report yesterday. i reviewed the numbers and they look good, but the marketing budget for march is still missing.",
+        "Could you send it over when your free? I would like to finalize everything before the meeting on friday.",
+    ];
+    let mut s = margin::config::load();
+    s.style = margin::inference::Style::Standard;
+    let _ = margin::config::save(&s);
+    let exe = std::path::Path::new(&std::env::var("LOCALAPPDATA").unwrap()).join("Margin/target/release/margin.exe");
+    let mut app = Command::new(exe).spawn().map_err(|e| e.to_string())?;
+    std::thread::sleep(Duration::from_secs(10));
+    let page = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/pages/demo.html");
+    let url = format!("file:///{}", page.display().to_string().replace('\\', "/"));
+    let profile = std::env::temp_dir().join("margin-e2e-edge-profile");
+    let mut edge = Command::new(r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe")
+        .arg(format!("--user-data-dir={}", profile.display()))
+        .args(["--no-first-run", "--no-default-browser-check", "--window-position=80,60", "--window-size=860,760", &format!("--app={url}")])
+        .spawn()
+        .map_err(|e| e.to_string())?;
+    let result = (|| {
+        let h = wait_window(|t| t.starts_with("Margin demo"), Duration::from_secs(20)).ok_or("demo window missing")?;
+        std::thread::sleep(Duration::from_millis(1500));
+        foreground(h)?;
+        focus_by_name(uia, h, "Message body")?;
+        std::thread::sleep(Duration::from_millis(300));
+        let key = |vk: VIRTUAL_KEY, up: bool| INPUT { r#type: INPUT_KEYBOARD, Anonymous: INPUT_0 { ki: KEYBDINPUT { wVk: vk, dwFlags: if up { KEYEVENTF_KEYUP } else { KEYBD_EVENT_FLAGS(0) }, ..Default::default() } } };
+        for (i, p) in paras.iter().enumerate() {
+            if i > 0 {
+                if foreground_root() != h {
+                    return Err(focus_thief());
+                }
+                // A blank line between paragraphs, like an email.
+                unsafe { SendInput(&[key(VK_RETURN, false), key(VK_RETURN, true), key(VK_RETURN, false), key(VK_RETURN, true)], size_of::<INPUT>() as i32) };
+                std::thread::sleep(Duration::from_millis(150));
+            }
+            guarded_type(h, &margin::text::EditPlan { select: 0, insert: p.to_string() })?;
+            std::thread::sleep(Duration::from_millis(400));
+        }
+        // Let the model check every paragraph.
+        std::thread::sleep(Duration::from_secs(6));
+        let body = unsafe {
+            let root = uia.ElementFromHandle(h).map_err(|e| e.to_string())?;
+            let cond = uia.CreatePropertyCondition(UIA_NamePropertyId, &windows::Win32::System::Variant::VARIANT::from("Message body")).map_err(|e| e.to_string())?;
+            root.FindFirst(TreeScope_Descendants, &cond).map_err(|e| e.to_string())?.CurrentBoundingRectangle().map_err(|e| e.to_string())?
+        };
+        let mut win = RECT::default();
+        unsafe { GetWindowRect(h, &mut win).map_err(|e| e.to_string())? };
+        let frame = RECT { left: body.left - 40, top: body.top - 130, right: body.right + 40, bottom: body.bottom + 90 };
+        let n = underlines().len();
+        mouse_to(win.right - 20, win.bottom - 20);
+        std::thread::sleep(Duration::from_millis(300));
+        capture(frame, &dir.join("demo-underlines.bmp"));
+
+        // Hover "your" (it should be "you're") for the pill.
+        let all = underlines();
+        let mut by_pos: Vec<RECT> = all.iter().map(|x| x.1).collect();
+        by_pos.sort_by_key(|r| (r.top / 10, r.left));
+        let mut pill_shot = String::from("no pill");
+        for r in by_pos {
+            let (x, y) = center(&r);
+            mouse_to(x, y);
+            if let Some((_, card, title)) = wait_for(800, || popup().filter(|p| p.2.split(" | ").next().is_some_and(|first| first.contains("your")))) {
+                std::thread::sleep(Duration::from_millis(250));
+                capture(RECT { left: r.left - 220, top: r.top - 70, right: (r.right + 260).max(card.right + 20), bottom: card.bottom + 40 }, &dir.join("demo-pill.bmp"));
+                pill_shot = title;
+                break;
+            }
+        }
+        mouse_to(win.right - 20, win.bottom - 20);
+        std::thread::sleep(Duration::from_millis(500));
+
+        // The full list on the last paragraph, in Corporate style.
+        if foreground_root() != h {
+            return Err(focus_thief());
+        }
+        unsafe {
+            SendInput(&[key(VK_CONTROL, false), key(VK_SHIFT, false), key(VK_SPACE, false), key(VK_SPACE, true), key(VK_SHIFT, true), key(VK_CONTROL, true)], size_of::<INPUT>() as i32);
+        }
+        wait_for(4000, popup).ok_or("the list did not open")?;
+        std::thread::sleep(Duration::from_secs(4));
+        let (ph, card, _) = popup().ok_or("popup gone")?;
+        let dpi = unsafe { windows::Win32::UI::HiDpi::GetDpiForWindow(ph) }.max(96) as i32;
+        let sc = |v: i32| v * dpi / 96;
+        let mut found = false;
+        for x in (sc(20)..sc(320)).step_by(sc(10) as usize) {
+            mouse_to(card.left + x, card.top + sc(18));
+            click();
+            std::thread::sleep(Duration::from_millis(150));
+            if margin::config::load().style == margin::inference::Style::Corporate {
+                found = true;
+                break;
+            }
+        }
+        if !found {
+            return Err("could not select the Corporate style".into());
+        }
+        wait_for(10000, || popup_rows().iter().any(|r| r.starts_with("Rephrase:")).then_some(())).ok_or("no Corporate rephrasings")?;
+        mouse_to(win.right - 20, win.bottom - 20);
+        std::thread::sleep(Duration::from_millis(400));
+        let (_, card, _) = popup().ok_or("popup gone")?;
+        capture(card, &dir.join("demo-styles.bmp"));
+        let rows = popup_rows();
+        // Leave the text as typed.
+        unsafe { SendInput(&[key(VK_ESCAPE, false), key(VK_ESCAPE, true)], size_of::<INPUT>() as i32) };
+        let _ = reader;
+        Ok(format!("{n} underline(s) across the email; pill {pill_shot:?}; Corporate list {rows:?}"))
+    })();
+    mouse_to(10, 10);
+    let _ = Command::new("taskkill").args(["/F", "/T", "/PID", &edge.id().to_string()]).output();
+    let _ = edge.wait();
+    let _ = Command::new("taskkill").args(["/F", "/PID", &app.id().to_string()]).output();
+    let _ = app.wait();
+    result
+}
+
+/// The reported bug: after Enter, while typing on in the new line, the previous paragraph
+/// must still be checked (model fixes included), and selecting or moving into it must not
+/// make its underlines disappear.
+fn newline_case(reader: &Reader) -> std::result::Result<String, String> {
+    // Harper only catches "we" here; the missing final period comes from the model.
+    const P1: &str = "we went to the beach yesterday and it was the best day of the summer";
+    const P2: &str = "next weekend we are planning to go hiking in the mountains with friends";
+    let exe = std::path::Path::new(&std::env::var("LOCALAPPDATA").unwrap()).join("Margin/target/release/margin.exe");
+    let mut app = Command::new(exe).spawn().map_err(|e| e.to_string())?;
+    std::thread::sleep(Duration::from_secs(10));
+    let mut host = Command::new(std::env::current_exe().unwrap()).args(["--host", "richedit"]).spawn().unwrap();
+    let result = (|| {
+        let h = wait_window(|t| t == "Margin E2E host richedit", Duration::from_secs(10)).ok_or("host window missing")?;
+        foreground(h)?;
+        std::thread::sleep(Duration::from_millis(300));
+        guarded_type(h, &margin::text::EditPlan { select: 0, insert: P1.into() })?;
+        let key = |vk: VIRTUAL_KEY, up: bool| INPUT { r#type: INPUT_KEYBOARD, Anonymous: INPUT_0 { ki: KEYBDINPUT { wVk: vk, dwFlags: if up { KEYEVENTF_KEYUP } else { KEYBD_EVENT_FLAGS(0) }, ..Default::default() } } };
+        if foreground_root() != h {
+            return Err(focus_thief());
+        }
+        unsafe { SendInput(&[key(VK_RETURN, false), key(VK_RETURN, true)], size_of::<INPUT>() as i32) };
+        // Type the next line like a person (~8 chars/s), never pausing long.
+        let caret_y = {
+            std::thread::sleep(Duration::from_millis(150));
+            retry(|| reader.read_focused())?.caret.top
+        };
+        let mut max_p1 = 0;
+        for u in P2.encode_utf16() {
+            if foreground_root() != h {
+                return Err(focus_thief());
+            }
+            let k = |f| INPUT { r#type: INPUT_KEYBOARD, Anonymous: INPUT_0 { ki: KEYBDINPUT { wScan: u, dwFlags: f, ..Default::default() } } };
+            unsafe { SendInput(&[k(KEYEVENTF_UNICODE), k(KEYEVENTF_UNICODE | KEYEVENTF_KEYUP)], size_of::<INPUT>() as i32) };
+            std::thread::sleep(Duration::from_millis(120));
+            max_p1 = max_p1.max(underlines().iter().filter(|x| x.1.bottom <= caret_y).count());
+        }
+        if max_p1 < 2 {
+            return Err(format!("while typing the new line, paragraph 1 had at most {max_p1} underline(s) (want 2: 'we' and the model's final period)"));
+        }
+        // Select up into paragraph 1, then move around: underlines must stay.
+        std::thread::sleep(Duration::from_millis(800));
+        let p1_now = || underlines().iter().filter(|x| x.1.bottom <= caret_y).count();
+        let before_select = p1_now();
+        unsafe { SendInput(&[key(VK_SHIFT, false), key(VK_UP, false), key(VK_UP, true), key(VK_SHIFT, true)], size_of::<INPUT>() as i32) };
+        std::thread::sleep(Duration::from_millis(900));
+        let during_select = p1_now();
+        unsafe { SendInput(&[key(VK_LEFT, false), key(VK_LEFT, true)], size_of::<INPUT>() as i32) };
+        std::thread::sleep(Duration::from_millis(900));
+        let after_move = p1_now();
+        if during_select == 0 || after_move == 0 {
+            return Err(format!("paragraph 1 underlines: {before_select} before selecting, {during_select} while selected, {after_move} after moving into it"));
+        }
+        Ok(format!("paragraph 1 had {max_p1} underlines while typing the next line; {before_select} → {during_select} while selected → {after_move} after moving into it"))
+    })();
+    let _ = host.kill();
     let _ = Command::new("taskkill").args(["/F", "/PID", &app.id().to_string()]).output();
     let _ = app.wait();
     result
