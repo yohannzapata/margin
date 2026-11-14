@@ -96,6 +96,14 @@ fn main() {
         report.extend(underline_cases(&reader, &uia));
     }
 
+    if only == "paragraphs" {
+        set_inline(true);
+        report.push(format!("{:<34} {}", "Paragraphs: RichEdit", fmt(paragraphs_case(&reader, &uia, None))));
+        for (label, name) in [("Paragraphs: Edge textarea", "Textarea"), ("Paragraphs: Edge rich editor", "Message body")] {
+            report.push(format!("{label:<34} {}", fmt(paragraphs_case(&reader, &uia, Some(name)))));
+        }
+    }
+
     if only == "styles" {
         set_inline(true);
         report.push(format!("{:<34} {}", "Styles: list → Formal → apply", fmt(style_case(&reader))));
@@ -257,8 +265,8 @@ fn one_underline_case(reader: &Reader, h: HWND, name: Option<&str>, uia: &IUIAut
         focus_by_name(uia, h, n)?;
     }
     std::thread::sleep(Duration::from_millis(300));
-    if unsafe { GetForegroundWindow() } != h {
-        return Err("target lost focus; refusing to type".into());
+    if foreground_root() != h {
+        return Err(focus_thief());
     }
     for u in T.encode_utf16() {
         let k = |f| INPUT { r#type: INPUT_KEYBOARD, Anonymous: INPUT_0 { ki: KEYBDINPUT { wScan: u, dwFlags: f, ..Default::default() } } };
@@ -278,7 +286,10 @@ fn one_underline_case(reader: &Reader, h: HWND, name: Option<&str>, uia: &IUIAut
     .ok_or_else(|| format!("expected 2 underlines, got {:?}", underlines()))?;
     let underline_ms = t0.elapsed().as_millis();
     // Issues are underlined in text order: dont (0), thats (1), maybe more.
-    let thats = lines.iter().find(|x| x.0 == 1).map(|x| x.1).ok_or("no underline for the second issue")?;
+    // Underlines are numbered by priority, not position: "thats" is the second from the left.
+    let mut by_x: Vec<RECT> = lines.iter().map(|x| x.1).collect();
+    by_x.sort_by_key(|r| r.left);
+    let thats = by_x[1];
 
     // 2. Hover "thats" → card with only that fix → click it.
     let (x, y) = center(&thats);
@@ -296,12 +307,14 @@ fn one_underline_case(reader: &Reader, h: HWND, name: Option<&str>, uia: &IUIAut
     click_first_row(&card, dpi);
     std::thread::sleep(Duration::from_millis(600));
     let after = retry(|| reader.read_focused())?;
-    if !after.before.ends_with("I dont think that's a good idea ") {
-        return Err(format!("after fixing 'thats': {:?}", after.before));
+    // The whole text is right, and the caret is back at the end where the user was typing.
+    let whole = format!("{}{}", after.before, after.after);
+    if whole.trim_end() != "I dont think that's a good idea" || !after.after.trim().is_empty() {
+        return Err(format!("after fixing 'thats': text {whole:?}, text after caret {:?}", after.after));
     }
 
     // 3. Click on "dont" (moves the caret into the word), then use its card.
-    let dont = wait_for(4000, || underlines().into_iter().find(|x| x.0 == 0).map(|x| x.1))
+    let dont = wait_for(4000, || underlines().into_iter().map(|x| x.1).min_by_key(|r| r.left))
         .ok_or("underline for 'dont' did not come back after the first fix")?;
     let (x, y) = center(&dont);
     mouse_to(x, y);
@@ -316,7 +329,7 @@ fn one_underline_case(reader: &Reader, h: HWND, name: Option<&str>, uia: &IUIAut
     if !all.contains("I don't think that's a good idea") || all.contains("dont") {
         return Err(format!("after fixing 'dont' with the caret inside it: {all:?}"));
     }
-    if unsafe { GetForegroundWindow() } != h {
+    if foreground_root() != h {
         return Err("focus left the app".into());
     }
     mouse_to(10, 10);
@@ -369,6 +382,98 @@ fn underline_cases(reader: &Reader, uia: &IUIAutomation) -> Vec<String> {
     out
 }
 
+/// Two paragraphs; the caret ends in the second. The first must get underlined and be
+/// fixable from there, leaving the second untouched.
+fn paragraphs_case(reader: &Reader, uia: &IUIAutomation, edge_field: Option<&str>) -> std::result::Result<String, String> {
+    const P1: &str = "we went to the beach yesterday and i think its the best day of the summer";
+    const P2: &str = "lets meet tomorow at the cafe ";
+    let exe = std::path::Path::new(&std::env::var("LOCALAPPDATA").unwrap()).join("Margin/target/release/margin.exe");
+    let mut app = Command::new(exe).spawn().map_err(|e| e.to_string())?;
+    std::thread::sleep(Duration::from_secs(10));
+    let mut host: Child = match edge_field {
+        None => Command::new(std::env::current_exe().unwrap()).args(["--host", "richedit"]).spawn().unwrap(),
+        Some(_) => {
+            let page = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/pages/editors.html");
+            let url = format!("file:///{}", page.display().to_string().replace('\\', "/"));
+            let profile = std::env::temp_dir().join("margin-e2e-edge-profile");
+            Command::new(r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe")
+                .arg(format!("--user-data-dir={}", profile.display()))
+                .args(["--no-first-run", "--no-default-browser-check", "--new-window", &url])
+                .spawn()
+                .map_err(|e| e.to_string())?
+        }
+    };
+    let result = (|| {
+        let h = match edge_field {
+            None => wait_window(|t| t == "Margin E2E host richedit", Duration::from_secs(10)),
+            Some(_) => wait_window(|t| t.starts_with("Margin editor test"), Duration::from_secs(20)),
+        }
+        .ok_or("window missing")?;
+        if edge_field.is_some() {
+            std::thread::sleep(Duration::from_millis(1500));
+        }
+        foreground(h)?;
+        if let Some(n) = edge_field {
+            focus_by_name(uia, h, n)?;
+        }
+        std::thread::sleep(Duration::from_millis(300));
+        guarded_type(h, &margin::text::EditPlan { select: 0, insert: P1.into() })?;
+        let enter = |up: bool| INPUT { r#type: INPUT_KEYBOARD, Anonymous: INPUT_0 { ki: KEYBDINPUT { wVk: VK_RETURN, dwFlags: if up { KEYEVENTF_KEYUP } else { KEYBD_EVENT_FLAGS(0) }, ..Default::default() } } };
+        if foreground_root() != h {
+            return Err(focus_thief());
+        }
+        unsafe { SendInput(&[enter(false), enter(true)], size_of::<INPUT>() as i32) };
+        std::thread::sleep(Duration::from_millis(100));
+        guarded_type(h, &margin::text::EditPlan { select: 0, insert: P2.into() })?;
+        let caret_y = retry(|| reader.read_focused())?.caret.top;
+        // Underlines must appear above the caret line (in the first paragraph).
+        let t0 = Instant::now();
+        let first = wait_for(6000, || {
+            let u = underlines();
+            u.into_iter().filter(|x| x.1.bottom <= caret_y).min_by_key(|x| x.1.left)
+        })
+        .ok_or_else(|| format!("no underline in the first paragraph (underlines: {:?})", underlines()))?;
+        let found_ms = t0.elapsed().as_millis();
+        let n_first = underlines().iter().filter(|x| x.1.bottom <= caret_y).count();
+        let (x, y) = center(&first.1);
+        mouse_to(x, y);
+        let (ph, card, title) = wait_for(2000, popup).ok_or("no card on hover")?;
+        let dpi = unsafe { windows::Win32::UI::HiDpi::GetDpiForWindow(ph) }.max(96) as i32;
+        let before_fix = retry(|| reader.read_focused())?;
+        let p1_before = before_fix.before.split(['\r', '\n']).next().unwrap_or("").to_string();
+        click_first_row(&card, dpi);
+        std::thread::sleep(Duration::from_millis(700));
+        mouse_to(10, 10);
+        let after = retry(|| reader.read_focused())?;
+        let all = format!("{}{}", after.before, after.after);
+        let mut lines = all.split(['\r', '\n']).filter(|l| !l.is_empty());
+        let (p1, p2) = (lines.next().unwrap_or(""), lines.next().unwrap_or(""));
+        if p1 == p1_before {
+            return Err(format!("first paragraph unchanged after clicking the card {title:?}: {p1:?}"));
+        }
+        if p2.trim_end() != P2.trim_end() {
+            return Err(format!("second paragraph was changed: {p2:?}"));
+        }
+        // The caret is back at the end of paragraph 2, where the user was typing.
+        if !after.after.trim().is_empty() {
+            return Err(format!("caret not restored: text after it {:?}", after.after));
+        }
+        Ok(format!("{n_first} underline(s) in paragraph 1 after {found_ms} ms; card {title:?}; paragraph 1 now {p1:?}; caret restored"))
+    })();
+    match edge_field {
+        None => {
+            let _ = host.kill();
+        }
+        Some(_) => {
+            let _ = Command::new("taskkill").args(["/F", "/T", "/PID", &host.id().to_string()]).output();
+        }
+    }
+    let _ = host.wait();
+    let _ = Command::new("taskkill").args(["/F", "/PID", &app.id().to_string()]).output();
+    let _ = app.wait();
+    result
+}
+
 /// Rows of the visible popup, from its title ("Tag: text | Tag: text").
 fn popup_rows() -> Vec<String> {
     popup().map(|p| p.2.split(" | ").map(str::to_string).collect()).unwrap_or_default()
@@ -389,8 +494,8 @@ fn style_case(reader: &Reader) -> std::result::Result<String, String> {
         let h = wait_window(|t| t == "Margin E2E host richedit", Duration::from_secs(10)).ok_or("host window missing")?;
         foreground(h)?;
         std::thread::sleep(Duration::from_millis(300));
-        if unsafe { GetForegroundWindow() } != h {
-            return Err("target lost focus; refusing to type".to_string());
+        if foreground_root() != h {
+            return Err(focus_thief());
         }
         guarded_type(h, &margin::text::EditPlan { select: 0, insert: T.into() })?;
         std::thread::sleep(Duration::from_millis(400));
@@ -470,8 +575,8 @@ fn latency_case() -> String {
         let h = wait_window(|t| t == "Margin E2E host richedit", Duration::from_secs(10)).ok_or("host window missing")?;
         foreground(h)?;
         std::thread::sleep(Duration::from_millis(300));
-        if unsafe { GetForegroundWindow() } != h {
-            return Err("target lost focus; refusing to type".into());
+        if foreground_root() != h {
+            return Err(focus_thief());
         }
         let state = || {
             let u = underlines();
@@ -530,8 +635,8 @@ fn ghost_case(reader: &Reader) -> std::result::Result<String, String> {
         let h = wait_window(|t| t == "Margin E2E host richedit", Duration::from_secs(10)).ok_or("host window missing")?;
         foreground(h)?;
         std::thread::sleep(Duration::from_millis(300));
-        if unsafe { GetForegroundWindow() } != h {
-            return Err("target lost focus; refusing to type".to_string());
+        if foreground_root() != h {
+            return Err(focus_thief());
         }
         for u in T.encode_utf16() {
             let k = |f| INPUT { r#type: INPUT_KEYBOARD, Anonymous: INPUT_0 { ki: KEYBDINPUT { wScan: u, dwFlags: f, ..Default::default() } } };
@@ -596,8 +701,8 @@ fn app_case(reader: &Reader, typed: &str, wait_ms: u64, want: &[&str]) -> std::r
         foreground(h)?;
         std::thread::sleep(Duration::from_millis(300));
         // Type character by character, like a person, without the injection marker.
-        if unsafe { GetForegroundWindow() } != h {
-            return Err("target lost focus; refusing to type".to_string());
+        if foreground_root() != h {
+            return Err(focus_thief());
         }
         for u in typed.encode_utf16() {
             let k = |f| INPUT { r#type: INPUT_KEYBOARD, Anonymous: INPUT_0 { ki: KEYBDINPUT { wScan: u, dwFlags: f, ..Default::default() } } };
@@ -619,7 +724,7 @@ fn app_case(reader: &Reader, typed: &str, wait_ms: u64, want: &[&str]) -> std::r
         std::thread::sleep(Duration::from_millis(wait_ms)); // let model passes (settle/idle) run
         let mut r = RECT::default();
         let _ = unsafe { GetWindowRect(popup, &mut r) };
-        if unsafe { GetForegroundWindow() } != h {
+        if foreground_root() != h {
             return Err("popup stole focus".to_string());
         }
         let tab = |f| INPUT { r#type: INPUT_KEYBOARD, Anonymous: INPUT_0 { ki: KEYBDINPUT { wVk: VK_TAB, dwFlags: f, ..Default::default() } } };
@@ -696,9 +801,23 @@ fn retry(f: impl Fn() -> std::result::Result<margin::uia::FieldContext, Skip>) -
 }
 
 /// Type only if the target is still the foreground window.
+/// The top-level window that has the foreground. (Edge sometimes reports its inner
+/// "Chrome Legacy Window" child as the foreground window; that is still Edge.)
+fn foreground_root() -> HWND {
+    unsafe { GetAncestor(GetForegroundWindow(), GA_ROOT) }
+}
+
+/// Which window took the foreground (for diagnosing focus failures).
+fn focus_thief() -> String {
+    let h = unsafe { GetForegroundWindow() };
+    let mut pid = 0;
+    unsafe { GetWindowThreadProcessId(h, Some(&mut pid)) };
+    format!("target lost focus to {:?} ({}); refusing to type", window_text(h), margin::uia::process_name(pid))
+}
+
 fn guarded_type(hwnd: HWND, plan: &EditPlan) -> std::result::Result<(), String> {
-    if unsafe { GetForegroundWindow() } != hwnd {
-        return Err("target lost focus; refusing to type".into());
+    if foreground_root() != hwnd {
+        return Err(focus_thief());
     }
     if inject::apply(plan) { Ok(()) } else { Err("SendInput was blocked".into()) }
 }
