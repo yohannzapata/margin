@@ -138,10 +138,10 @@ unsafe extern "system" fn proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRE
                     let boundary = matches!(vk, VK_SPACE | VK_OEM_PERIOD | VK_OEM_COMMA | VK_OEM_1 | VK_OEM_2)
                         || (vk.0 == b'1' as u16 && shift)
                         || packet_char.is_some_and(|c| c.is_whitespace() || ".,!?;:)".contains(c));
-                    let editing = ctrl
-                        || alt
-                        || win
-                        || matches!(vk, VK_BACK | VK_DELETE | VK_RETURN | VK_LEFT | VK_RIGHT | VK_UP | VK_DOWN | VK_HOME | VK_END | VK_PRIOR | VK_NEXT | VK_TAB | VK_ESCAPE | VK_INSERT);
+                    // Shortcuts (paste, undo, cut…) can change text anywhere: clear underlines.
+                    // Arrows, Home/End, Backspace, Delete and Enter keep them: the next pass
+                    // re-measures within ~120 ms and drops any that no longer match.
+                    let editing = (ctrl || alt || win) && !matches!(vk, VK_LEFT | VK_RIGHT | VK_UP | VK_DOWN | VK_HOME | VK_END | VK_BACK | VK_DELETE);
                     post(WM_APP_TYPING, k.vkCode as usize | (boundary as usize) << 16 | (editing as usize) << 17);
                 }
             }

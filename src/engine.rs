@@ -315,6 +315,11 @@ fn reader_thread(
         let hide = |note: Option<String>| Update { hide: true, note, done: true, ..update(job.id) };
         let ctx: FieldContext = match reader.read_focused() {
             Ok(c) => c,
+            // Selecting text (e.g. a paragraph) isn't a reason to drop the underlines.
+            Err(uia::Skip::NoTextAccess(why)) if why == "selection active" && !on_demand => {
+                dlog("read: selection active, keeping current suggestions");
+                continue;
+            }
             Err(e) => {
                 dlog(&format!("read {:?}: can't read field: {e:?}", job.pass));
                 post_result(hwnd, &results, hide(on_demand.then(|| format!("Margin can't read this field ({e:?})"))));
@@ -336,7 +341,9 @@ fn reader_thread(
         let finished = comp.ends_sentence || matches!(job.pass, Pass::Idle | Pass::OnDemand | Pass::Restyle(_));
 
         // The current paragraph, up to the caret (its last word may still be typed).
-        let analysis = if s.grammar && !comp.target.trim().is_empty() { grammar.analyze(&comp.target, finished) } else { Default::default() };
+        // With the caret inside a paragraph (editing, not typing at the end) the whole
+        // paragraph is checked below like any other, so nothing after the caret is missed.
+        let analysis = if s.grammar && caret_at_end && !comp.target.trim().is_empty() { grammar.analyze(&comp.target, finished) } else { Default::default() };
         let mut items = match &analysis.fixed {
             Some(fixed) => correct_items(Kind::Correct, &comp.target, fixed, &line, true, false),
             None => vec![],
@@ -348,7 +355,7 @@ fn reader_thread(
         full.extend(ctx.after.chars());
         let all = uia::lines(&full);
         let ci = all.iter().position(|l| l.start <= caret && caret <= l.start + l.text.chars().count()).unwrap_or(0);
-        let mut order: Vec<usize> = (0..all.len()).filter(|&i| i != ci && text::word_count(&all[i].text) >= 2).collect();
+        let mut order: Vec<usize> = (0..all.len()).filter(|&i| (i != ci || !caret_at_end) && text::word_count(&all[i].text) >= 2).collect();
         order.sort_by_key(|&i| i.abs_diff(ci));
         order.truncate(MAX_OTHER_PARAS);
         let mut others = vec![];
@@ -674,18 +681,21 @@ fn model_thread(hwnd: isize, rx: Receiver<LlmMsg>, latest: Arc<AtomicU64>, resul
 
         // 3. Every other paragraph: cached until it changes, so this is usually free.
         if settings.grammar && !matches!(job.pass, Pass::Restyle(_)) {
+            let mut checked_one = false;
             for pj in &job.others {
                 if pj.text.chars().count() > MAX_TARGET_CHARS {
                     continue;
                 }
-                let key: CacheKey = (Mode::Correct, Style::Standard, true, pj.before.clone(), pj.text.clone(), pj.after.clone());
+                let key: CacheKey = (Mode::Correct, Style::Standard, true, String::new(), pj.text.clone(), String::new());
                 let cands = match revisions.get(&key) {
                     Some(v) => v.clone(),
                     None => {
-                        // A newer round goes first; this paragraph is redone then.
-                        if stale() {
+                        // A newer round goes first, but each round finishes one unchecked
+                        // paragraph, so continuous typing can't starve the others.
+                        if stale() && checked_one {
                             break;
                         }
+                        checked_one = true;
                         let a = &pj.analysis;
                         let r = Revision {
                             before: &pj.before,
@@ -699,7 +709,7 @@ fn model_thread(hwnd: isize, rx: Receiver<LlmMsg>, latest: Arc<AtomicU64>, resul
                             rules_ran: job.rules_ran,
                             style: Style::Standard,
                         };
-                        match inference::suggest(provider, Mode::Correct, &r, &stale) {
+                        match inference::suggest(provider, Mode::Correct, &r, &|| false) {
                             Ok(v) => {
                                 revisions.insert(key, v.clone());
                                 v
